@@ -1,0 +1,5 @@
+.DS_Store
+native-app/.build
+native-app/.build-*
+native-app/.swiftpm
+native-app/dist
