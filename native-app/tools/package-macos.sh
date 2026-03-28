@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 APPS_DIR="$DIST_DIR/apps"
 DMGS_DIR="$DIST_DIR/dmg"
 BUILD_ROOT="${BUILD_ROOT:-/tmp/cleanmacassistent-package-build}"
@@ -11,10 +11,16 @@ TEMP_HOME="${TEMP_HOME:-/tmp/cleanmacassistent-build-home}"
 DEVELOPER_DIR_PATH="${DEVELOPER_DIR_PATH:-/Applications/Xcode.app/Contents/Developer}"
 ASSET_CATALOG_SOURCE="$ROOT_DIR/XcodeSupport/Assets.xcassets"
 
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-1.0.2}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+BUILD_ARCHS="${BUILD_ARCHS:-arm64 x86_64}"
+
+typeset -a SWIFT_ARCH_ARGS=()
+for arch in ${(z)BUILD_ARCHS}; do
+  SWIFT_ARCH_ARGS+=("--arch" "$arch")
+done
 
 function log() {
   printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$1"
@@ -46,6 +52,20 @@ function prepare_assets() {
 
 function swift_env() {
   env DEVELOPER_DIR="$DEVELOPER_DIR_PATH" HOME="$TEMP_HOME" "$@"
+}
+
+function swift_build() {
+  local configuration="$1"
+  local scratch_path="$2"
+
+  swift_env swift build --disable-sandbox "${SWIFT_ARCH_ARGS[@]}" -c "$configuration" --scratch-path "$scratch_path"
+}
+
+function swift_show_bin_path() {
+  local configuration="$1"
+  local scratch_path="$2"
+
+  swift_env swift build --disable-sandbox "${SWIFT_ARCH_ARGS[@]}" -c "$configuration" --show-bin-path --scratch-path "$scratch_path"
 }
 
 function sign_app() {
@@ -135,12 +155,14 @@ Install:
 
 Notes:
 - Build type: $build_kind
+- Architectures: $BUILD_ARCHS
 - Website: https://cleanmac-assistant.easycompzeeland.nl
 - Support: https://easycompzeeland.nl/en/services/hulp-op-afstand
 
 Important:
 - The developer build includes internal preview tools and should not be distributed publicly.
 - For public website distribution, use a Developer ID signature and notarization.
+- If you are building from a network share and signing fails, rerun with DIST_DIR pointed at a local disk path.
 EOF
 }
 
@@ -166,8 +188,8 @@ function build_variant() {
   local resources_bundle_name="CleanMacAssistantNative_CleanMacAssistantNative.bundle"
 
   log "Building $app_name ($configuration)"
-  swift_env swift build --disable-sandbox -c "$configuration" --scratch-path "$scratch_path"
-  bin_dir="$(swift_env swift build --disable-sandbox -c "$configuration" --show-bin-path --scratch-path "$scratch_path")"
+  swift_build "$configuration" "$scratch_path"
+  bin_dir="$(swift_show_bin_path "$configuration" "$scratch_path")"
 
   executable_path="$bin_dir/$bundle_executable"
   resources_bundle_path="$bin_dir/$resources_bundle_name"
