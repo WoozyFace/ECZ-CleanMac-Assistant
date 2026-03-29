@@ -77,6 +77,42 @@ private enum AppResources {
     }()
 }
 
+private struct LocalSystemSnapshot {
+    let freeDisk: String
+    let uptime: String
+    let osVersion: String
+
+    static var current: LocalSystemSnapshot {
+        let fileManager = FileManager.default
+        let freeDiskBytes = (try? fileManager.attributesOfFileSystem(forPath: NSHomeDirectory())[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+
+        let byteFormatter = ByteCountFormatter()
+        byteFormatter.allowedUnits = [.useGB, .useTB]
+        byteFormatter.countStyle = .file
+        byteFormatter.isAdaptive = true
+
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return LocalSystemSnapshot(
+            freeDisk: freeDiskBytes > 0 ? byteFormatter.string(fromByteCount: freeDiskBytes) : localized("Unknown", "Onbekend"),
+            uptime: formattedUptime(ProcessInfo.processInfo.systemUptime),
+            osVersion: "macOS \(version.majorVersion).\(version.minorVersion)"
+        )
+    }
+
+    private static func formattedUptime(_ interval: TimeInterval) -> String {
+        let totalHours = Int(interval / 3600)
+        let days = totalHours / 24
+        let hours = totalHours % 24
+
+        if days > 0 {
+            return localized("\(days)d \(hours)h", "\(days)d \(hours)u")
+        }
+
+        let minutes = Int(interval / 60) % 60
+        return localized("\(hours)h \(minutes)m", "\(hours)u \(minutes)m")
+    }
+}
+
 private struct BrandMarkArtwork: View {
     var body: some View {
         Group {
@@ -409,40 +445,37 @@ private struct SidebarPane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.white.opacity(0.08))
-                        .frame(width: 52, height: 52)
+                        .frame(width: 40, height: 40)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.white.opacity(0.10), lineWidth: 1)
                         )
 
-                    Circle()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                        .opacity(0.18)
-                        .frame(width: 44, height: 44)
-
                     BrandMarkArtwork()
-                        .frame(width: 34, height: 34)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .frame(width: 24, height: 24)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(localized("CleanMac Assistant", "CleanMac Assistant"))
-                        .font(.system(size: 25, weight: .bold, design: .rounded))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundStyle(AppPalette.textPrimary)
-                    Text(localized("Easy Mac help", "Eenvoudige Mac-hulp"))
+                    Text(localized("EasyComp Zeeland", "EasyComp Zeeland"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(AppPalette.textTertiary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .center)
 
-            Text(localized("Simple help for keeping your Mac clean, fast, and easy to use. Start with Smart Care or open a page on the left.", "Eenvoudige hulp om uw Mac schoon, snel en prettig in gebruik te houden. Begin met Slimme Zorg of open een pagina aan de linkerkant."))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(AppPalette.textSecondary)
+            Text(localized("Cleaner Mac care, without the noise.", "Rustigere Mac-zorg, zonder ruis."))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppPalette.textTertiary)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
         #if DEVELOPER_BUILD
@@ -512,18 +545,9 @@ private struct SidebarModuleRow: View {
     var body: some View {
         HStack(spacing: 13) {
             ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                module.theme.accent.opacity(isSelected ? 0.34 : 0.16),
-                                Color.white.opacity(isSelected ? 0.12 : 0.06)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 40, height: 40)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isSelected ? module.theme.accent.opacity(0.18) : (isHovered ? Color.white.opacity(0.05) : Color.clear))
+                    .frame(width: 36, height: 36)
 
                 Image(systemName: module.symbolName)
                     .font(.system(size: 16, weight: .semibold))
@@ -538,6 +562,7 @@ private struct SidebarModuleRow: View {
                 Text(module.eyebrow.appLocalized)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(AppPalette.textTertiary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 0)
@@ -545,15 +570,11 @@ private struct SidebarModuleRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(backgroundView)
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(isSelected ? 0.12 : 0.05), lineWidth: 1)
-        )
         .scaleEffect(isHovered ? 1.012 : 1)
         .shadow(
-            color: module.theme.accent.opacity(isSelected ? 0.14 : 0.04),
-            radius: isSelected ? 20 : 10,
-            y: isSelected ? 12 : 6
+            color: module.theme.accent.opacity(isSelected ? 0.08 : 0.02),
+            radius: isSelected ? 10 : 4,
+            y: isSelected ? 6 : 2
         )
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.16)) {
@@ -566,22 +587,17 @@ private struct SidebarModuleRow: View {
     private var backgroundView: some View {
         if isSelected {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppPalette.cardStrong)
+                .fill(module.theme.accent.opacity(0.10))
                 .matchedGeometryEffect(id: "sidebar-selection", in: selectionAnimation)
-                .overlay(alignment: .leading) {
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    module.theme.accent,
-                                    AppPalette.iceBlue
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                        .frame(width: 4, height: 28)
-                        .padding(.leading, 6)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(module.theme.accent.opacity(0.20), lineWidth: 0.5)
+                }
+                .overlay(alignment: .trailing) {
+                    Circle()
+                        .fill(module.theme.accent)
+                        .frame(width: 6, height: 6)
+                        .padding(.trailing, 10)
                 }
         } else {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -657,41 +673,26 @@ private struct ModuleDetailPane: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 22) {
-                    MainHeroScene(module: module)
+                    if module.id == .smartCare {
+                        HomeDashboardView(module: module)
+                    } else {
+                        ModuleSectionHeader(module: module)
+                    }
 
                     if viewModel.isScanningModule && !viewModel.isRunning {
                         ScanStatusPanel(tint: module.theme.accent)
                     }
 
-                    HStack(spacing: 16) {
-                        MetricCard(
-                            title: localized("Tasks here", "Taken hier"),
-                            value: "\(tasks.count)",
-                            caption: localized("Things this page can do", "Wat deze pagina kan doen"),
-                            tint: module.theme.accent
-                        )
-                        MetricCard(
-                            title: localized("Selected", "Geselecteerd"),
-                            value: "\(viewModel.selectedTaskCount)",
-                            caption: localized("Will run when you start this page", "Wordt uitgevoerd wanneer u deze pagina start"),
-                            tint: AppPalette.iceBlue
-                        )
-                        MetricCard(
-                            title: localized("Can clean", "Kan opschonen"),
-                            value: viewModel.selectedModuleEstimatedCleanup,
-                            caption: viewModel.selectedModuleEstimatedCleanupCaption,
-                            tint: AppPalette.pinkGlow
-                        )
-                    }
-
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(localized("Tasks", "Taken"))
+                                Text(module.id == .smartCare ? localized("Recommended tools", "Aanbevolen hulpmiddelen") : localized("Tools on this page", "Hulpmiddelen op deze pagina"))
                                     .font(.system(size: 28, weight: .bold, design: .rounded))
                                     .foregroundStyle(AppPalette.textPrimary)
 
-                                Text(localized("Pick what you want to check or clean.", "Kies wat u wilt controleren of opschonen."))
+                                Text(module.id == .smartCare
+                                     ? localized("Start with the first-pass actions below, or jump straight into another area from the sidebar.", "Begin met de eerste controles hieronder, of spring direct naar een ander onderdeel via de navigatie links.")
+                                     : localized("Start with the suggested actions, then open deeper tools only when needed.", "Begin met de aanbevolen acties en open diepere hulpmiddelen alleen wanneer dat nodig is."))
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(AppPalette.textTertiary)
                             }
@@ -709,13 +710,26 @@ private struct ModuleDetailPane: View {
                                             .fill(Color.white.opacity(0.08))
                                     )
                             } else {
-                                Button(localized("Scan this page", "Deze pagina scannen")) {
-                                    Task {
-                                        await viewModel.scanCurrentModule()
+                                HStack(spacing: 10) {
+                                    if module.id == .files {
+                                        Button(localized("Choose folders", "Mappen kiezen")) {
+                                            viewModel.chooseFileAccessFolders()
+                                        }
+                                        .buttonStyle(SecondaryGlassButtonStyle())
                                     }
+
+                                    Button(localized("Scan this page", "Deze pagina scannen")) {
+                                        Task {
+                                            await viewModel.scanCurrentModule()
+                                        }
+                                    }
+                                    .buttonStyle(SecondaryGlassButtonStyle())
                                 }
-                                .buttonStyle(SecondaryGlassButtonStyle())
                             }
+                        }
+
+                        if module.id == .files {
+                            FileAccessPanel(tint: module.theme.accent)
                         }
 
                         LazyVStack(spacing: 16) {
@@ -1052,55 +1066,175 @@ private struct UpdateProgressBar: View {
     }
 }
 
-private struct MainHeroScene: View {
+private struct HomeDashboardView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     let module: MaintenanceModule
 
     var body: some View {
-        let tone = visualTone(for: module.id)
+        let snapshot = LocalSystemSnapshot.current
 
-        VStack(spacing: 18) {
-            Text(module.eyebrow.appLocalized.uppercased())
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .kerning(1.5)
-                .foregroundStyle(module.theme.mist.opacity(0.9))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(module.title.appLocalized)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppPalette.textPrimary)
 
-            ModuleHeroArtwork(module: module, isAnimating: false)
-                .frame(height: 272)
+                    Text(module.subtitle.appLocalized)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(AppPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            Text(module.title.appLocalized)
-                .font(.system(size: 44, weight: .bold, design: .rounded))
-                .foregroundStyle(AppPalette.textPrimary)
+                Spacer()
 
-            Text(module.subtitle.appLocalized)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(AppPalette.textSecondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 620)
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(AppPalette.success)
+                        .frame(width: 8, height: 8)
+                        .shadow(color: AppPalette.success.opacity(0.5), radius: 4)
 
-            HStack(spacing: 10) {
-                HeroTag(text: localized("\(viewModel.selectedTaskCount) selected", "\(viewModel.selectedTaskCount) geselecteerd"), tint: module.theme.accent)
-                HeroTag(text: viewModel.selectedModuleEstimatedCleanup, tint: AppPalette.pinkGlow)
-                HeroTag(text: viewModel.isScanningModule ? localized("Checking first", "Eerst controleren") : localized("Ready", "Klaar"), tint: AppPalette.iceBlue)
+                    Text(localized("System ready", "Systeem klaar"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(AppPalette.textSecondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                )
             }
 
-            HStack(spacing: 14) {
-                Button {
-                    viewModel.runModule(module)
-                } label: {
-                    Label(localized("Run Selected Module", "Geselecteerde pagina uitvoeren"), systemImage: "play.fill")
-                        .frame(minWidth: 208)
-                }
-                .buttonStyle(PrimaryAuraButtonStyle())
-                .disabled(viewModel.isRunning)
+            smartScanCard
 
+            VStack(alignment: .leading, spacing: 14) {
+                Text(localized("Quick stats", "Snelle status"))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AppPalette.textSecondary)
+
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ], spacing: 12) {
+                    compactStatCard(
+                        title: localized("Free Disk", "Vrije schijf"),
+                        value: snapshot.freeDisk,
+                        subtitle: snapshot.osVersion,
+                        icon: "internaldrive.fill",
+                        tint: AppPalette.blueGlow
+                    )
+
+                    compactStatCard(
+                        title: localized("Can Clean", "Kan opschonen"),
+                        value: viewModel.selectedModuleEstimatedCleanup,
+                        subtitle: viewModel.selectedModuleEstimatedCleanupCaption,
+                        icon: "sparkles",
+                        tint: AppPalette.pinkGlow
+                    )
+
+                    compactStatCard(
+                        title: localized("Tools Ready", "Tools klaar"),
+                        value: "\(viewModel.selectedModuleTasks.count)",
+                        subtitle: localized("Available on this page", "Beschikbaar op deze pagina"),
+                        icon: "square.grid.2x2.fill",
+                        tint: AppPalette.success
+                    )
+
+                    compactStatCard(
+                        title: localized("Uptime", "Uptime"),
+                        value: snapshot.uptime,
+                        subtitle: localized("Current session", "Huidige sessie"),
+                        icon: "clock.fill",
+                        tint: AppPalette.iceBlue
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text(localized("Quick actions", "Snelle acties"))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AppPalette.textSecondary)
+
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ], spacing: 12) {
+                    quickActionCard(moduleID: .cleanup)
+                    quickActionCard(moduleID: .files)
+                    quickActionCard(moduleID: .applications)
+                    quickActionCard(moduleID: .performance)
+                }
+            }
+        }
+    }
+
+    private var smartScanCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 20) {
+                ZStack {
+                    Circle()
+                        .fill(module.theme.accent.opacity(0.10))
+                        .frame(width: 112, height: 112)
+                        .blur(radius: 18)
+
+                    Circle()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: 78, height: 78)
+                        .overlay(
+                            Circle()
+                                .stroke(module.theme.accent.opacity(0.25), lineWidth: 1)
+                        )
+
+                    if viewModel.isScanningModule {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(module.theme.accent)
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 30, weight: .medium))
+                            .foregroundStyle(module.theme.accent)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(viewModel.isScanningModule ? localized("Scanning now", "Nu aan het scannen") : localized("Smart Scan", "Slimme scan"))
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundStyle(AppPalette.textPrimary)
+
+                    Text(viewModel.isScanningModule
+                         ? localized("Checking the main cleanup and maintenance areas before anything is changed.", "De belangrijkste opschoon- en onderhoudsgebieden worden eerst gecontroleerd voordat er iets verandert.")
+                         : localized("Run a first pass across cleanup, files, applications, and performance to see where attention is needed.", "Voer eerst een controle uit over opschonen, bestanden, apps en prestaties om te zien waar aandacht nodig is."))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(AppPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        HeroTag(text: localized("\(viewModel.selectedTaskCount) selected", "\(viewModel.selectedTaskCount) geselecteerd"), tint: module.theme.accent)
+                        HeroTag(text: viewModel.selectedModuleEstimatedCleanup, tint: AppPalette.pinkGlow)
+                        HeroTag(text: localized("Uptime \(LocalSystemSnapshot.current.uptime)", "Uptime \(LocalSystemSnapshot.current.uptime)"), tint: AppPalette.iceBlue)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 12) {
                 Button {
                     viewModel.runSmartCare()
                 } label: {
-                    Label(localized("Run Smart Care", "Slimme Zorg uitvoeren"), systemImage: "sparkles")
-                        .frame(minWidth: 188)
+                    Label(localized("Start Smart Scan", "Slimme scan starten"), systemImage: "play.fill")
+                        .frame(minWidth: 184)
                 }
-                .buttonStyle(SecondaryGlassButtonStyle())
+                .buttonStyle(PrimaryAuraButtonStyle())
                 .disabled(viewModel.isRunning)
 
                 Button {
@@ -1108,35 +1242,179 @@ private struct MainHeroScene: View {
                         await viewModel.scanCurrentModule()
                     }
                 } label: {
-                    Label(localized("Scan first", "Eerst scannen"), systemImage: "magnifyingglass")
+                    Label(localized("Analyze First", "Eerst analyseren"), systemImage: "magnifyingglass")
                         .frame(minWidth: 150)
                 }
                 .buttonStyle(SecondaryGlassButtonStyle())
                 .disabled(viewModel.isRunning || viewModel.isScanningModule)
             }
-            .padding(.top, 6)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 30)
-        .padding(.vertical, 28)
-        .background(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            tone.headerTop.opacity(0.22),
-                            tone.headerBottom.opacity(0.14),
-                            Color.white.opacity(0.03)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 32, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
+        .padding(28)
+        .background(DarkPanelBackground(tint: module.theme.accent, isElevated: true))
+    }
+
+    private func compactStatCard(title: String, value: String, subtitle: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(tint)
+
+                Spacer()
+
+                Circle()
+                    .fill(tint.opacity(0.18))
+                    .frame(width: 10, height: 10)
+            }
+
+            Text(title)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundStyle(AppPalette.textTertiary)
+                .textCase(.uppercase)
+
+            Text(value.appLocalized)
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .foregroundStyle(AppPalette.textPrimary)
+
+            Text(subtitle.appLocalized)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(DarkPanelBackground(tint: tint, isElevated: false))
+    }
+
+    private func quickActionCard(moduleID: MaintenanceModuleID) -> some View {
+        let targetModule = MaintenanceCatalog.module(for: moduleID)
+
+        return Button {
+            viewModel.selectModule(moduleID)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: targetModule.symbolName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(targetModule.theme.accent)
+
+                    Spacer()
+
+                    Circle()
+                        .fill(targetModule.theme.accent.opacity(0.22))
+                        .frame(width: 10, height: 10)
+                }
+
+                Text(targetModule.title.appLocalized)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AppPalette.textPrimary)
+
+                Text(targetModule.eyebrow.appLocalized)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppPalette.textSecondary)
+                    .lineLimit(2)
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(16)
+        .background(DarkPanelBackground(tint: targetModule.theme.accent, isElevated: false))
+    }
+}
+
+private struct ModuleSectionHeader: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    let module: MaintenanceModule
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(module.theme.accent.opacity(0.15))
+                    .frame(width: 84, height: 84)
+
+                Image(systemName: module.symbolName)
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(module.theme.accent)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(module.eyebrow.appLocalized.uppercased())
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .kerning(1.2)
+                    .foregroundStyle(AppPalette.textTertiary)
+
+                Text(module.title.appLocalized)
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppPalette.textPrimary)
+
+                Text(module.subtitle.appLocalized)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(AppPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    HeroTag(text: localized("\(viewModel.selectedTaskCount) selected", "\(viewModel.selectedTaskCount) geselecteerd"), tint: module.theme.accent)
+                    HeroTag(text: viewModel.selectedModuleEstimatedCleanup, tint: AppPalette.pinkGlow)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(26)
+        .background(DarkPanelBackground(tint: module.theme.accent, isElevated: true))
+    }
+}
+
+private struct DashboardInfoPanel<Content: View>: View {
+    let title: String
+    let tint: Color
+    let content: Content
+
+    init(title: String, tint: Color, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.tint = tint
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(AppPalette.textTertiary)
+                .textCase(.uppercase)
+
+            content
+        }
+        .padding(18)
+        .background(DarkPanelBackground(tint: tint, isElevated: false))
+    }
+}
+
+private struct DashboardValueRow: View {
+    let label: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(tint.opacity(0.92))
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppPalette.textTertiary)
+                    .textCase(.uppercase)
+
+                Text(value.appLocalized)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppPalette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -1957,7 +2235,7 @@ private struct TaskComponentPreview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(localized("What this task can review", "Wat deze taak kan bekijken"))
+            Text(localized("Review items", "Controle-onderdelen"))
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(AppPalette.textTertiary)
                 .textCase(.uppercase)
@@ -2067,8 +2345,12 @@ private struct TaskCard: View {
         viewModel.currentTaskID == task.id
     }
 
+    private var hasExpandedContext: Bool {
+        viewModel.scanFinding(for: task.id) != nil || viewModel.latestTaskOutput(for: task.id) != nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -2082,17 +2364,17 @@ private struct TaskCard: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 56, height: 56)
+                        .frame(width: 52, height: 52)
 
                     Image(systemName: task.symbolName)
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(AppPalette.textPrimary)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Text(task.title.appLocalized)
-                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
                             .foregroundStyle(AppPalette.textPrimary)
 
                         StatusBadge(text: task.impact.title, tint: task.impact.tint)
@@ -2102,16 +2384,17 @@ private struct TaskCard: View {
                     }
 
                     Text(task.subtitle.appLocalized)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(AppPalette.textSecondary)
                         .lineLimit(1)
 
-                    Text(task.detail.appLocalized)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(AppPalette.textTertiary)
-                        .lineSpacing(2)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !hasExpandedContext {
+                        Text(task.detail.appLocalized)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(AppPalette.textTertiary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     TaskScanSummary(state: viewModel.scanState(for: task.id))
 
@@ -2135,7 +2418,7 @@ private struct TaskCard: View {
 
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(localized("Include in module run", "Meenemen in paginarun"))
+                    Text(localized("Include", "Meenemen"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(AppPalette.textPrimary)
                     Text(task.estimatedTime.appLocalized)
@@ -2193,6 +2476,76 @@ private struct TaskCard: View {
                 isVisible = true
             }
         }
+    }
+}
+
+private struct FileAccessPanel: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(localized("Folder access", "Maptoegang"))
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppPalette.textPrimary)
+
+                    Text(viewModel.managedFileAccessSummary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AppPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                HStack(spacing: 10) {
+                    Button(localized("Choose folders", "Mappen kiezen")) {
+                        viewModel.chooseFileAccessFolders()
+                    }
+                    .buttonStyle(SecondaryGlassButtonStyle())
+
+                    if viewModel.hasManagedFileAccess {
+                        Button(localized("Clear", "Wissen")) {
+                            viewModel.clearFileAccessFolders()
+                        }
+                        .buttonStyle(SecondaryGlassButtonStyle())
+                    }
+                }
+            }
+
+            if !viewModel.managedFileAccessFolders.isEmpty {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10)
+                ], spacing: 10) {
+                    ForEach(viewModel.managedFileAccessFolders) { folder in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(folder.displayName)
+                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                .foregroundStyle(AppPalette.textPrimary)
+
+                            Text(folder.displayPath)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(AppPalette.textTertiary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(tint.opacity(0.08))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(tint.opacity(0.14), lineWidth: 1)
+                                )
+                        )
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(DarkPanelBackground(tint: tint, isElevated: false))
     }
 }
 
@@ -2566,8 +2919,8 @@ private struct AboutWorkspace: View {
                     aboutCard(
                         title: localized("Changelog", "Changelog"),
                         body: localized(
-                            "Version 1.0.5 adds real in-app cleanup for large or stale files, duplicate review that keeps one suggested original per group, and a clearer file cleanup flow for manual maintenance work.",
-                            "Versie 1.0.5 voegt echte in-app opschoning toe voor grote of verouderde bestanden, duplicaatcontrole die per groep één voorgesteld origineel bewaart en een duidelijkere bestandsopschoonflow voor handmatig onderhoud."
+                            "Version 1.0.10 adds a calmer folder-access flow to Files, so large-file, duplicate, and installer scans no longer trigger repeated macOS prompts for every location.",
+                            "Versie 1.0.10 voegt een rustigere maptoegangsflow toe aan Bestanden, zodat scans op grote bestanden, duplicaten en installers niet meer voor elke locatie opnieuw macOS-meldingen oproepen."
                         )
                     )
                     aboutCard(
@@ -2699,7 +3052,9 @@ private struct TaskReviewWorkspace: View {
                         )
                     }
 
-                    if let prompt = task.prompt {
+                    if viewModel.usesInstalledApplicationPicker(for: task) {
+                        InstalledApplicationPickerCard(task: task, tint: tint)
+                    } else if let prompt = task.prompt {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(prompt.title.appLocalized)
                                 .font(.system(size: 14, weight: .bold, design: .rounded))
@@ -2852,6 +3207,247 @@ private struct TaskReviewWorkspace: View {
                         .stroke(tint.opacity(0.18), lineWidth: 1)
                 )
         )
+    }
+}
+
+private struct InstalledApplicationPickerCard: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    let task: MaintenanceTaskDefinition
+    let tint: Color
+
+    private var selectedApplication: InstalledApplicationRecord? {
+        viewModel.activeSelectedInstalledApplication
+    }
+
+    private var pickerTitle: String {
+        switch task.id {
+        case .uninstall:
+            return localized("Choose an app to remove", "Kies een app om te verwijderen")
+        case .reset:
+            return localized("Choose an app to reset", "Kies een app om te resetten")
+        default:
+            return localized("Choose an installed app", "Kies een geïnstalleerde app")
+        }
+    }
+
+    private var pickerMessage: String {
+        switch task.id {
+        case .uninstall:
+            return localized("Installed apps are listed here so you can remove the exact app without typing its name.", "Geïnstalleerde apps staan hier in een lijst, zodat u precies de juiste app kunt verwijderen zonder de naam te typen.")
+        case .reset:
+            return localized("Pick the app whose saved settings should be cleared. Apps without a bundle identifier cannot be reset this way.", "Kies de app waarvan de opgeslagen instellingen moeten worden gewist. Apps zonder bundle-identifier kunnen op deze manier niet worden gereset.")
+        default:
+            return localized("Pick an installed app from the list below.", "Kies een geïnstalleerde app uit de lijst hieronder.")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(pickerTitle)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(AppPalette.textPrimary)
+
+            Text(pickerMessage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(AppPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField(localized("Search installed apps", "Geïnstalleerde apps zoeken"), text: $viewModel.applicationPickerQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(AppPalette.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.white.opacity(0.07))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                )
+
+            if let selectedApplication {
+                HStack(spacing: 10) {
+                    Image(nsImage: selectedApplication.icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 28, height: 28)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selectedApplication.name)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppPalette.textPrimary)
+
+                        Text(selectedApplication.bundleIdentifier ?? selectedApplication.displayLocation)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(AppPalette.textTertiary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    StatusBadge(text: localized("Selected", "Geselecteerd"), tint: tint)
+                }
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(tint.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(tint.opacity(0.16), lineWidth: 1)
+                        )
+                )
+            }
+
+            if viewModel.isLoadingInstalledApplications {
+                HStack(spacing: 12) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(tint)
+
+                    Text(localized("Loading installed apps…", "Geïnstalleerde apps laden…"))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AppPalette.textSecondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                        )
+                )
+            } else if viewModel.filteredInstalledApplications.isEmpty {
+                Text(localized("No installed apps matched this search.", "Geen geïnstalleerde apps gevonden voor deze zoekopdracht."))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppPalette.textSecondary)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.white.opacity(0.05))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                            )
+                    )
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 10) {
+                        ForEach(viewModel.filteredInstalledApplications) { app in
+                            InstalledApplicationPickerRow(
+                                app: app,
+                                taskID: task.id,
+                                isSelected: selectedApplication?.id == app.id,
+                                tint: tint
+                            )
+                        }
+                    }
+                }
+                .appScrollIndicators()
+                .frame(maxHeight: 340)
+            }
+        }
+    }
+}
+
+private struct InstalledApplicationPickerRow: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    let app: InstalledApplicationRecord
+    let taskID: MaintenanceTaskID
+    let isSelected: Bool
+    let tint: Color
+
+    private var canSelect: Bool {
+        switch taskID {
+        case .reset:
+            return app.bundleIdentifier?.isEmpty == false
+        default:
+            return true
+        }
+    }
+
+    var body: some View {
+        Button {
+            guard canSelect else { return }
+            viewModel.selectInstalledApplication(app, for: taskID)
+        } label: {
+            HStack(alignment: .center, spacing: 14) {
+                Image(nsImage: app.icon)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(app.name)
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppPalette.textPrimary)
+
+                        if let version = app.version, !version.isEmpty {
+                            Text("v\(version)")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(AppPalette.textTertiary)
+                        }
+                    }
+
+                    Text(app.bundleIdentifier ?? localized("No bundle identifier available", "Geen bundle-identifier beschikbaar"))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(canSelect ? AppPalette.textSecondary : AppPalette.error.opacity(0.88))
+                        .lineLimit(1)
+
+                    Text(app.displayLocation)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(AppPalette.textTertiary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 10)
+
+                if isSelected {
+                    StatusBadge(text: localized("Selected", "Geselecteerd"), tint: tint)
+                } else if !canSelect {
+                    StatusBadge(text: localized("No bundle ID", "Geen bundle-ID"), tint: AppPalette.error)
+                } else {
+                    Text(localized("Choose", "Kiezen"))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(tint.opacity(0.12))
+                                .overlay(
+                                    Capsule()
+                                        .stroke(tint.opacity(0.18), lineWidth: 1)
+                                )
+                        )
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(isSelected ? tint.opacity(0.10) : Color.white.opacity(0.05))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(isSelected ? tint.opacity(0.20) : Color.white.opacity(0.07), lineWidth: 1)
+                    )
+            )
+            .opacity(canSelect ? 1 : 0.88)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(localized("Reveal in Finder", "Toon in Finder")) {
+                viewModel.revealInstalledApplication(app)
+            }
+        }
     }
 }
 

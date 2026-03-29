@@ -1,6 +1,28 @@
 import AppKit
 import SwiftUI
 
+struct InstalledApplicationRecord: Identifiable {
+    let id: String
+    let name: String
+    let url: URL
+    let bundleIdentifier: String?
+    let version: String?
+    let icon: NSImage
+
+    var displayLocation: String {
+        if url.path.hasPrefix("/Applications") {
+            return "/Applications"
+        }
+
+        let homePrefix = FileManager.default.homeDirectoryForCurrentUser.path + "/"
+        if url.path.hasPrefix(homePrefix) {
+            return "~/" + String(url.path.dropFirst(homePrefix.count))
+        }
+
+        return url.deletingLastPathComponent().path
+    }
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
     private enum UpdateCheckTrigger {
@@ -30,8 +52,12 @@ final class AppViewModel: ObservableObject {
     @Published var reviewTaskID: MaintenanceTaskID?
     @Published var reviewSelections: Set<String> = []
     @Published var reviewInputText = ""
+    @Published var applicationPickerQuery = ""
     @Published var taskOutputs: [MaintenanceTaskID: String] = [:]
     @Published var isShowingAbout = false
+    @Published private(set) var managedFileAccessFolders: [ManagedFileAccessFolder] = ManagedFileAccessStore.storedFolders()
+    @Published private(set) var installedApplications: [InstalledApplicationRecord] = []
+    @Published private(set) var isLoadingInstalledApplications = false
     #if DEVELOPER_BUILD
     @Published var isPlaceboModeEnabled = false {
         didSet {
@@ -176,6 +202,24 @@ final class AppViewModel: ObservableObject {
         activityEntries.count > 1 || lastRunReport != nil
     }
 
+    var hasManagedFileAccess: Bool {
+        !managedFileAccessFolders.isEmpty
+    }
+
+    var managedFileAccessSummary: String {
+        guard !managedFileAccessFolders.isEmpty else {
+            return localized(
+                "No folders connected yet. Choose folders once to avoid repeated macOS prompts during file scans.",
+                "Er zijn nog geen mappen gekoppeld. Kies mappen één keer om herhaalde macOS-meldingen tijdens bestandsscans te voorkomen."
+            )
+        }
+
+        return localized(
+            "\(managedFileAccessFolders.count) folder(s) connected for file scans.",
+            "\(managedFileAccessFolders.count) map(pen) gekoppeld voor bestandsscans."
+        )
+    }
+
     var isShowingUpdateExperience: Bool {
         availableUpdateOffer != nil || updateInstallState.isPresented
     }
@@ -268,8 +312,40 @@ final class AppViewModel: ObservableObject {
         return resolvedConfirmation(for: task, inputValue: reviewInputText.trimmed.nilIfEmpty)
     }
 
+    var filteredInstalledApplications: [InstalledApplicationRecord] {
+        let query = applicationPickerQuery.trimmed.lowercased()
+        guard !query.isEmpty else { return installedApplications }
+
+        return installedApplications.filter { app in
+            app.name.lowercased().contains(query)
+                || app.url.lastPathComponent.lowercased().contains(query)
+                || app.bundleIdentifier?.lowercased().contains(query) == true
+                || app.displayLocation.lowercased().contains(query)
+        }
+    }
+
+    var activeSelectedInstalledApplication: InstalledApplicationRecord? {
+        guard let task = activeReviewTask else { return nil }
+        return selectedInstalledApplication(for: task.id, inputValue: reviewInputText.trimmed.nilIfEmpty)
+    }
+
     var selectedReviewSummary: String {
         if activeReviewComponents.isEmpty {
+            if let task = activeReviewTask {
+                switch task.id {
+                case .uninstall:
+                    if let app = activeSelectedInstalledApplication {
+                        return localized("Ready to remove \(app.name)", "Klaar om \(app.name) te verwijderen")
+                    }
+                case .reset:
+                    if let app = activeSelectedInstalledApplication {
+                        return localized("Ready to reset \(app.name)", "Klaar om \(app.name) te resetten")
+                    }
+                default:
+                    break
+                }
+            }
+
             if let task = activeReviewTask, task.prompt != nil {
                 let value = reviewInputText.trimmed
                 return value.isEmpty
@@ -367,6 +443,30 @@ final class AppViewModel: ObservableObject {
         reviewSelections = Set(activeReviewComponents.filter(\.selectedByDefault).map(\.id))
     }
 
+    func usesInstalledApplicationPicker(for task: MaintenanceTaskDefinition) -> Bool {
+        switch task.id {
+        case .uninstall, .reset:
+            return isLoadingInstalledApplications || !installedApplications.isEmpty
+        default:
+            return false
+        }
+    }
+
+    func selectInstalledApplication(_ app: InstalledApplicationRecord, for taskID: MaintenanceTaskID) {
+        switch taskID {
+        case .uninstall:
+            reviewInputText = app.url.path
+        case .reset:
+            reviewInputText = app.bundleIdentifier ?? ""
+        default:
+            break
+        }
+    }
+
+    func revealInstalledApplication(_ app: InstalledApplicationRecord) {
+        NSWorkspace.shared.activateFileViewerSelecting([app.url])
+    }
+
     func beginReview(for task: MaintenanceTaskDefinition) {
         guard !isRunning else { return }
 
@@ -376,6 +476,14 @@ final class AppViewModel: ObservableObject {
             reviewTaskID = task.id
             reviewSelections = reviewedSelection(for: task.id)
             reviewInputText = savedPrompt(for: task.id)
+            applicationPickerQuery = ""
+
+            switch task.id {
+            case .uninstall, .reset:
+                await ensureInstalledApplicationsLoaded()
+            default:
+                break
+            }
         }
     }
 
@@ -386,6 +494,7 @@ final class AppViewModel: ObservableObject {
         reviewTaskID = nil
         reviewSelections = []
         reviewInputText = ""
+        applicationPickerQuery = ""
     }
 
     func runReviewTask() {
@@ -409,6 +518,9 @@ final class AppViewModel: ObservableObject {
         #endif
         selectedModuleID = moduleID
         Task {
+            if moduleID == .applications {
+                await ensureInstalledApplicationsLoaded()
+            }
             await scanCurrentModule()
         }
     }
@@ -483,6 +595,57 @@ final class AppViewModel: ObservableObject {
 
     func openWebsite() {
         open(urlString: "https://cleanmac-assistant.easycompzeeland.nl")
+    }
+
+    func chooseFileAccessFolders() {
+        let panel = NSOpenPanel()
+        panel.title = localized("Choose folders for file scans", "Kies mappen voor bestandsscans")
+        panel.message = localized(
+            "Pick the folders that Files tools may scan. This avoids repeated macOS prompts for Desktop, Documents, and Downloads.",
+            "Kies de mappen die de Bestandstools mogen scannen. Dit voorkomt herhaalde macOS-meldingen voor Bureaublad, Documenten en Downloads."
+        )
+        panel.prompt = localized("Use folders", "Gebruik mappen")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+
+        let response = panel.runModal()
+        guard response == .OK, !panel.urls.isEmpty else { return }
+
+        ManagedFileAccessStore.save(urls: panel.urls)
+        managedFileAccessFolders = ManagedFileAccessStore.storedFolders()
+
+        appendActivity(
+            title: localized("File access updated", "Bestandstoegang bijgewerkt"),
+            detail: localized(
+                "File scans will now use: \(managedFileAccessFolders.map(\.displayPath).joined(separator: ", "))",
+                "Bestandsscans gebruiken nu: \(managedFileAccessFolders.map(\.displayPath).joined(separator: ", "))"
+            ),
+            isError: false
+        )
+
+        Task {
+            await scanCurrentModule()
+        }
+    }
+
+    func clearFileAccessFolders() {
+        ManagedFileAccessStore.clear()
+        managedFileAccessFolders = []
+        appendActivity(
+            title: localized("File access cleared", "Bestandstoegang gewist"),
+            detail: localized(
+                "Files tools will stop scanning Desktop, Documents, or Downloads until you choose folders again.",
+                "Bestandstools scannen Bureaublad, Documenten of Downloads niet meer totdat u opnieuw mappen kiest."
+            ),
+            isError: false
+        )
+
+        Task {
+            await scanCurrentModule()
+        }
     }
 
     func openAbout() {
@@ -913,18 +1076,26 @@ final class AppViewModel: ObservableObject {
         switch task.id {
         case .uninstall:
             guard let inputValue else { return task.confirmation }
+            let app = selectedInstalledApplication(for: task.id, inputValue: inputValue)
+            let displayName = app?.name ?? inputValue
             return TaskConfirmation(
-                title: localized("Uninstall \(inputValue)?", "\(inputValue) verwijderen?"),
-                message: localized("\(inputValue).app will be removed from /Applications.", "\(inputValue).app wordt verwijderd uit /Applications."),
+                title: localized("Uninstall \(displayName)?", "\(displayName) verwijderen?"),
+                message: localized(
+                    "\(displayName) and common leftovers will be removed from this Mac.",
+                    "\(displayName) en veelvoorkomende restbestanden worden van deze Mac verwijderd."
+                ),
                 confirmTitle: localized("Remove App", "App verwijderen"),
                 style: .critical
             )
 
         case .reset:
             guard let inputValue else { return task.confirmation }
+            let app = selectedInstalledApplication(for: task.id, inputValue: inputValue)
+            let displayName = app?.name ?? inputValue
+            let bundleIdentifier = app?.bundleIdentifier ?? inputValue
             return TaskConfirmation(
-                title: localized("Reset preferences for \(inputValue)?", "Voorkeuren voor \(inputValue) resetten?"),
-                message: localized("The saved defaults for \(inputValue) will be deleted.", "De opgeslagen voorkeuren voor \(inputValue) worden verwijderd."),
+                title: localized("Reset preferences for \(displayName)?", "Voorkeuren voor \(displayName) resetten?"),
+                message: localized("The saved defaults for \(bundleIdentifier) will be deleted.", "De opgeslagen voorkeuren voor \(bundleIdentifier) worden verwijderd."),
                 confirmTitle: localized("Reset Preferences", "Voorkeuren resetten"),
                 style: .warning
             )
@@ -974,6 +1145,97 @@ final class AppViewModel: ObservableObject {
 
     private func playSound(named name: String) {
         NSSound(named: NSSound.Name(name))?.play()
+    }
+
+    private func ensureInstalledApplicationsLoaded(force: Bool = false) async {
+        if isLoadingInstalledApplications {
+            return
+        }
+
+        if !force && !installedApplications.isEmpty {
+            return
+        }
+
+        isLoadingInstalledApplications = true
+        installedApplications = await discoverInstalledApplications()
+        isLoadingInstalledApplications = false
+    }
+
+    private func discoverInstalledApplications() async -> [InstalledApplicationRecord] {
+        let fileManager = FileManager.default
+        let roots = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        ]
+
+        var records: [InstalledApplicationRecord] = []
+        var seenPaths = Set<String>()
+
+        for root in roots where fileManager.fileExists(atPath: root.path) {
+            let contents = (try? fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            for appURL in contents where appURL.pathExtension == "app" {
+                if Task.isCancelled {
+                    return records
+                }
+
+                let resolvedPath = appURL.standardizedFileURL.path
+                guard seenPaths.insert(resolvedPath).inserted else { continue }
+
+                let bundle = Bundle(url: appURL)
+                let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                    ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                    ?? appURL.deletingPathExtension().lastPathComponent
+
+                let record = InstalledApplicationRecord(
+                    id: resolvedPath,
+                    name: name,
+                    url: appURL,
+                    bundleIdentifier: bundle?.bundleIdentifier,
+                    version: bundle?.infoDictionary?["CFBundleShortVersionString"] as? String,
+                    icon: NSWorkspace.shared.icon(forFile: appURL.path)
+                )
+                records.append(record)
+
+                if records.count.isMultiple(of: 20) {
+                    await Task.yield()
+                }
+            }
+        }
+
+        return records.sorted { lhs, rhs in
+            let leftSystem = lhs.url.path.hasPrefix("/Applications")
+            let rightSystem = rhs.url.path.hasPrefix("/Applications")
+            if leftSystem != rightSystem {
+                return leftSystem && !rightSystem
+            }
+
+            let nameComparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if nameComparison != .orderedSame {
+                return nameComparison == .orderedAscending
+            }
+
+            return lhs.url.path.localizedCaseInsensitiveCompare(rhs.url.path) == .orderedAscending
+        }
+    }
+
+    private func selectedInstalledApplication(for taskID: MaintenanceTaskID, inputValue: String?) -> InstalledApplicationRecord? {
+        guard let inputValue else { return nil }
+
+        switch taskID {
+        case .uninstall:
+            return installedApplications.first { $0.url.path == inputValue }
+        case .reset:
+            return installedApplications.first {
+                $0.bundleIdentifier?.compare(inputValue, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }
+        default:
+            return nil
+        }
     }
 
     #if DEVELOPER_BUILD
@@ -1267,7 +1529,7 @@ final class AppViewModel: ObservableObject {
                     TaskScanComponent(id: "demo_cache", title: "General cache", detail: "Temporary cache files kept by apps and macOS in your user account.", reclaimableBytes: 2_180_000_000, itemCount: 1246, selectedByDefault: true, cleanupAction: nil)
                 ]
             )
-        case .chrome, .firefox, .mailAttachments, .safari, .cookies, .imessage, .facetime, .agents, .downloadsReview, .cloudAudit, .largeOldFiles, .duplicates:
+        case .chrome, .firefox, .mailAttachments, .safari, .cookies, .imessage, .facetime, .agents, .downloadsReview, .cloudAudit, .largeOldFiles, .duplicates, .installerFiles, .orphanedFiles:
             return placeboReviewState(
                 message: genericMessage,
                 components: sampleComponents(for: task.id)
@@ -1382,6 +1644,60 @@ final class AppViewModel: ObservableObject {
                     cleanupAction: .removePath("/tmp/demo-duplicate-photo", requiresAdmin: false)
                 )
             ]
+        case .installerFiles:
+            return [
+                TaskScanComponent(
+                    id: "demo_installer_dmg",
+                    title: "CleanMac Assistant V1.0.0 First Release Universal Build.dmg",
+                    detail: localized(
+                        "Installer file • Last changed 19 days ago\nLocation: ~/Downloads/CleanMac Assistant V1.0.0 First Release Universal Build.dmg\nSelect this installer if you want the app to remove it.",
+                        "Installatiebestand • 19 dagen geleden voor het laatst gewijzigd\nLocatie: ~/Downloads/CleanMac Assistant V1.0.0 First Release Universal Build.dmg\nSelecteer dit installatiebestand als u wilt dat de app het verwijdert."
+                    ),
+                    reclaimableBytes: 4_590_000,
+                    itemCount: 1,
+                    selectedByDefault: true,
+                    cleanupAction: .removePath("/tmp/demo-installer-dmg", requiresAdmin: false)
+                ),
+                TaskScanComponent(
+                    id: "demo_installer_pkg",
+                    title: "Printer-Driver-Setup.pkg",
+                    detail: localized(
+                        "Installer file • Last changed 43 days ago\nLocation: ~/Desktop/Printer-Driver-Setup.pkg\nSelect this installer if you want the app to remove it.",
+                        "Installatiebestand • 43 dagen geleden voor het laatst gewijzigd\nLocatie: ~/Desktop/Printer-Driver-Setup.pkg\nSelecteer dit installatiebestand als u wilt dat de app het verwijdert."
+                    ),
+                    reclaimableBytes: 128_000_000,
+                    itemCount: 1,
+                    selectedByDefault: true,
+                    cleanupAction: .removePath("/tmp/demo-installer-pkg", requiresAdmin: false)
+                )
+            ]
+        case .orphanedFiles:
+            return [
+                TaskScanComponent(
+                    id: "demo_orphaned_affinity",
+                    title: "com.seriflabs.affinityphoto2",
+                    detail: localized(
+                        "No installed app was found for bundle ID com.seriflabs.affinityphoto2.\nLast touched 34 days ago\n~/Library/Application Support/com.seriflabs.affinityphoto2\n~/Library/Caches/com.seriflabs.affinityphoto2",
+                        "Er is geen geïnstalleerde app gevonden voor bundle-ID com.seriflabs.affinityphoto2.\n34 dagen geleden voor het laatst gewijzigd\n~/Library/Application Support/com.seriflabs.affinityphoto2\n~/Library/Caches/com.seriflabs.affinityphoto2"
+                    ),
+                    reclaimableBytes: 1_420_000_000,
+                    itemCount: 2,
+                    selectedByDefault: false,
+                    cleanupAction: .removePaths(["/tmp/demo-orphaned-affinity-support", "/tmp/demo-orphaned-affinity-cache"], requiresAdmin: false)
+                ),
+                TaskScanComponent(
+                    id: "demo_orphaned_oldvpn",
+                    title: "com.example.oldvpn",
+                    detail: localized(
+                        "No installed app was found for bundle ID com.example.oldvpn.\nLast touched 112 days ago\n~/Library/Preferences/com.example.oldvpn.plist\n~/Library/Saved Application State/com.example.oldvpn.savedState",
+                        "Er is geen geïnstalleerde app gevonden voor bundle-ID com.example.oldvpn.\n112 dagen geleden voor het laatst gewijzigd\n~/Library/Preferences/com.example.oldvpn.plist\n~/Library/Saved Application State/com.example.oldvpn.savedState"
+                    ),
+                    reclaimableBytes: 3_200_000,
+                    itemCount: 2,
+                    selectedByDefault: false,
+                    cleanupAction: .removePaths(["/tmp/demo-orphaned-vpn-pref", "/tmp/demo-orphaned-vpn-state"], requiresAdmin: false)
+                )
+            ]
         case .cloudAudit:
             return [
                 TaskScanComponent(id: "demo_icloud", title: "iCloud Drive files", detail: "Files that are stored locally from iCloud Drive.", reclaimableBytes: 12_300_000_000, itemCount: 1204, selectedByDefault: false, cleanupAction: nil),
@@ -1395,7 +1711,7 @@ final class AppViewModel: ObservableObject {
     private func incrementPatchVersion(_ version: String) -> String {
         var parts = version.split(separator: ".").compactMap { Int($0) }
         if parts.isEmpty {
-            return "1.0.5"
+            return "1.0.10"
         }
         if parts.count < 3 {
             parts += Array(repeating: 0, count: 3 - parts.count)
@@ -1452,8 +1768,8 @@ final class AppViewModel: ObservableObject {
 
     private func developerPreviewChangelog() -> String {
         localized(
-            "What's new\n• Large and stale files can now be reviewed and removed inside the app\n• Duplicate scans now keep one suggested original and let you remove the extra copies\n• File review scenes are clearer for manual cleanup work\n• Developer preview data now mirrors the new file cleanup flow",
-            "Wat is er nieuw\n• Grote en verouderde bestanden kunnen nu in de app worden bekeken en verwijderd\n• Duplicaatscans bewaren nu één voorgesteld origineel en laten u de extra kopieën verwijderen\n• Bestandscontrole is duidelijker gemaakt voor handmatige opschoning\n• Voorbeelddata voor ontwikkelaars volgt nu de nieuwe bestandsopschoonflow"
+            "What's new\n• Files now uses a chosen-folder access flow so Desktop, Documents, and Downloads scans stop triggering repeated macOS permission prompts\n• You can connect scan folders once from the Files page and clear them later when needed\n• Large-file, duplicate, and installer scans now stay inside the folders you explicitly approved\n• Release notes and packaging were refreshed for the file-access pass",
+            "Wat is er nieuw\n• Bestanden gebruikt nu een gekozen-maptoegang, zodat scans van Bureaublad, Documenten en Downloads geen herhaalde macOS-toestemmingsmeldingen meer geven\n• U kunt scanmappen nu één keer koppelen vanuit de Bestanden-pagina en later weer wissen wanneer nodig\n• Scans op grote bestanden, duplicaten en installers blijven nu binnen de mappen die u zelf expliciet hebt toegestaan\n• Release-notes en packaging zijn vernieuwd voor deze bestands-toegangspass"
         )
     }
 
@@ -1468,9 +1784,9 @@ final class AppViewModel: ObservableObject {
         case .performance:
             return (.cleanup, .mailAttachments)
         case .applications:
-            return (.applications, .uninstall)
+            return (.applications, .orphanedFiles)
         case .files:
-            return (.files, .downloadsReview)
+            return (.files, .installerFiles)
         case .spaceLens:
             return (.spaceLens, .cloudAudit)
         }

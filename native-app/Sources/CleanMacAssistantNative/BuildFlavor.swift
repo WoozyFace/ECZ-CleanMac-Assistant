@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppBuildFlavor {
-    static let currentVersion = "1.0.5"
+    static let currentVersion = "1.0.10"
 
     #if DEVELOPER_BUILD
     static let isDeveloper = true

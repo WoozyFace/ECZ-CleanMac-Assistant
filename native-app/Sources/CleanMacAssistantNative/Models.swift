@@ -36,11 +36,13 @@ enum MaintenanceTaskID: String, CaseIterable, Identifiable, Hashable {
     case malware
     case agents
     case uninstall
+    case orphanedFiles
     case reset
     case appStoreUpdates
     case disk
     case largeOldFiles
     case duplicates
+    case installerFiles
     case downloadsReview
     case cloudAudit
 
@@ -234,9 +236,9 @@ enum MaintenanceCatalog {
     static let modules: [MaintenanceModule] = [
         MaintenanceModule(
             id: .smartCare,
-            eyebrow: "Recommended first pass",
-            title: "Smart Care",
-            subtitle: "A calm first pass that prepares your tools, checks safe cleanup areas, and gives your Mac a low-friction tune-up before deeper maintenance.",
+            eyebrow: "Overview and smart scan",
+            title: "Home",
+            subtitle: "Start here with a calmer smart scan, quick health context, and the main cleanup lanes for this Mac.",
             symbolName: "sparkles",
             theme: ModuleTheme(
                 top: Color(red: 0.12, green: 0.25, blue: 0.46),
@@ -248,9 +250,9 @@ enum MaintenanceCatalog {
         ),
         MaintenanceModule(
             id: .cleanup,
-            eyebrow: "Junk and leftovers",
-            title: "Cleanup",
-            subtitle: "Tidy up system junk, caches, browser leftovers, mail downloads, and old local clutter that quietly eats into storage.",
+            eyebrow: "Storage cleanup",
+            title: "Disk Cleaner",
+            subtitle: "Review junk files, caches, browser leftovers, mail downloads, and other storage clutter that quietly piles up.",
             symbolName: "trash.slash.fill",
             theme: ModuleTheme(
                 top: Color(red: 0.10, green: 0.34, blue: 0.38),
@@ -262,9 +264,9 @@ enum MaintenanceCatalog {
         ),
         MaintenanceModule(
             id: .protection,
-            eyebrow: "Privacy and threats",
-            title: "Protection",
-            subtitle: "Cover malware, browser traces, chat leftovers, login-item exposure, and persistence points in one tighter security lane.",
+            eyebrow: "Privacy and safety",
+            title: "Privacy",
+            subtitle: "Cover malware, browser traces, chat leftovers, login items, and persistence points in one cleaner privacy lane.",
             symbolName: "shield.lefthalf.filled",
             theme: ModuleTheme(
                 top: Color(red: 0.18, green: 0.32, blue: 0.24),
@@ -276,9 +278,9 @@ enum MaintenanceCatalog {
         ),
         MaintenanceModule(
             id: .performance,
-            eyebrow: "Speed and stability",
+            eyebrow: "Speed and maintenance",
             title: "Performance",
-            subtitle: "Handle maintenance routines, cache flushing, relaunch core UI processes, check updates, and monitor the Mac live.",
+            subtitle: "Handle maintenance routines, refresh caches and core processes, check updates, and keep the Mac feeling responsive.",
             symbolName: "gauge.with.dots.needle.67percent",
             theme: ModuleTheme(
                 top: Color(red: 0.39, green: 0.19, blue: 0.40),
@@ -290,9 +292,9 @@ enum MaintenanceCatalog {
         ),
         MaintenanceModule(
             id: .applications,
-            eyebrow: "App control",
+            eyebrow: "Apps and leftovers",
             title: "Applications",
-            subtitle: "Remove apps, reset broken preferences, and jump straight into update surfaces without digging through the system by hand.",
+            subtitle: "Remove apps, review orphaned leftovers, reset broken preferences, and jump straight into update surfaces.",
             symbolName: "shippingbox.fill",
             theme: ModuleTheme(
                 top: Color(red: 0.39, green: 0.27, blue: 0.14),
@@ -300,13 +302,13 @@ enum MaintenanceCatalog {
                 accent: Color(red: 0.98, green: 0.76, blue: 0.43),
                 mist: Color(red: 1.0, green: 0.92, blue: 0.77)
             ),
-            taskIDs: [.uninstall, .reset, .appStoreUpdates]
+            taskIDs: [.uninstall, .orphanedFiles, .reset, .appStoreUpdates]
         ),
         MaintenanceModule(
             id: .files,
-            eyebrow: "My clutter lane",
-            title: "My Clutter",
-            subtitle: "Review large and old files, inspect duplicate candidates, and jump directly into the Downloads folder when it needs attention.",
+            eyebrow: "Duplicates and files",
+            title: "Files",
+            subtitle: "Review duplicate files, large and older files, installer packages, and the Downloads folder from one place.",
             symbolName: "doc.on.doc.fill",
             theme: ModuleTheme(
                 top: Color(red: 0.34, green: 0.23, blue: 0.31),
@@ -314,13 +316,13 @@ enum MaintenanceCatalog {
                 accent: Color(red: 0.96, green: 0.58, blue: 0.66),
                 mist: Color(red: 1.0, green: 0.86, blue: 0.90)
             ),
-            taskIDs: [.largeOldFiles, .duplicates, .downloadsReview]
+            taskIDs: [.largeOldFiles, .duplicates, .installerFiles, .downloadsReview]
         ),
         MaintenanceModule(
             id: .spaceLens,
             eyebrow: "Storage overview",
             title: "Space Lens",
-            subtitle: "Map disk usage interactively and audit synced cloud folders so storage-heavy areas are easier to spot before you clean them.",
+            subtitle: "Map disk usage interactively and audit synced cloud folders so storage-heavy areas are easier to spot before cleanup.",
             symbolName: "internaldrive.fill",
             theme: ModuleTheme(
                 top: Color(red: 0.18, green: 0.22, blue: 0.44),
@@ -668,44 +670,57 @@ enum MaintenanceCatalog {
             id: .uninstall,
             moduleID: .applications,
             title: "Uninstall App",
-            subtitle: "Remove a named app bundle from /Applications.",
-            detail: "You provide the app name, then the assistant removes the matching .app bundle from /Applications after confirmation.",
+            subtitle: "Remove an app and clean common leftovers.",
+            detail: "Pick an installed app from the list, then the assistant removes that app bundle and clears common user-library leftovers after confirmation.",
             symbolName: "app.badge.minus",
             impact: .high,
             estimatedTime: "A few seconds",
             command: .uninstallApplication,
             prompt: TaskPrompt(
                 title: "Uninstall App",
-                message: "Enter the exact app name you want to remove from /Applications.",
-                placeholder: "Example: Safari",
+                message: "Choose the installed app you want to remove.",
+                placeholder: "Search installed apps",
                 actionTitle: "Continue"
             ),
             confirmation: TaskConfirmation(
                 title: "Remove app?",
-                message: "The selected app bundle will be deleted from /Applications.",
+                message: "The selected app bundle will be deleted from this Mac.",
                 confirmTitle: "Remove App",
                 style: .critical
             )
+        ),
+        MaintenanceTaskDefinition(
+            id: .orphanedFiles,
+            moduleID: .applications,
+            title: "Review Orphaned Files",
+            subtitle: "Find leftover app data that no longer matches an installed app.",
+            detail: "Scans common user Library locations for bundle-ID leftovers whose app is no longer installed, then lets you review and remove only the items you trust.",
+            symbolName: "shippingbox.circle.fill",
+            impact: .medium,
+            estimatedTime: "A few seconds",
+            command: .inlineReport(command: "__ORPHANED_FILES__"),
+            prompt: nil,
+            confirmation: nil
         ),
         MaintenanceTaskDefinition(
             id: .reset,
             moduleID: .applications,
             title: "Reset App Preferences",
             subtitle: "Delete saved defaults for a bundle identifier.",
-            detail: "Useful for stubborn apps with broken settings when you do not want to fully reinstall them yet.",
+            detail: "Choose an installed app and delete its saved defaults when you want to reset broken settings without fully reinstalling it yet.",
             symbolName: "slider.horizontal.3",
             impact: .high,
             estimatedTime: "A few seconds",
             command: .resetPreferences,
             prompt: TaskPrompt(
                 title: "Reset App Preferences",
-                message: "Enter the bundle identifier to reset.",
-                placeholder: "Example: com.vendor.app",
+                message: "Choose the installed app whose preferences you want to reset.",
+                placeholder: "Search installed apps",
                 actionTitle: "Continue"
             ),
             confirmation: TaskConfirmation(
                 title: "Reset preferences?",
-                message: "The saved defaults for the selected bundle identifier will be deleted.",
+                message: "The saved defaults for the selected app will be deleted.",
                 confirmTitle: "Reset Preferences",
                 style: .warning
             )
@@ -759,6 +774,19 @@ enum MaintenanceCatalog {
             impact: .longRunning,
             estimatedTime: "Can take a while on larger folders",
             command: .inlineReport(command: "__DUPLICATE_SCAN__"),
+            prompt: nil,
+            confirmation: nil
+        ),
+        MaintenanceTaskDefinition(
+            id: .installerFiles,
+            moduleID: .files,
+            title: "Clean Installer Files",
+            subtitle: "Review and remove old installer packages inside the app.",
+            detail: "Scans Downloads, Desktop, and Homebrew cache locations for older installer packages such as DMG, PKG, and XIP files, then lets you remove only the ones you select.",
+            symbolName: "shippingbox.and.arrow.backward.fill",
+            impact: .medium,
+            estimatedTime: "A few seconds",
+            command: .inlineReport(command: "__INSTALLER_REVIEW__"),
             prompt: nil,
             confirmation: nil
         ),

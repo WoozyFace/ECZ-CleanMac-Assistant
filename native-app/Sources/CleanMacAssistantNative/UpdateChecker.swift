@@ -211,6 +211,31 @@ struct UpdateChecker {
 
     private func releaseNotes(for version: String) -> String {
         switch normalizedVersion(version) {
+        case "1.0.10":
+            return localized(
+                "What's new\n• Files now asks you to choose scan folders once instead of tripping repeated Desktop, Documents, and Downloads permission prompts\n• Large-file, duplicate, and installer reviews now stay inside the folders you explicitly connected\n• The Files page includes a clearer folder-access panel so the scan scope stays understandable\n• The release metadata was refreshed for the calmer file-access flow",
+                "Wat is er nieuw\n• Bestanden laat u nu één keer scanmappen kiezen in plaats van herhaalde toestemmingsmeldingen voor Bureaublad, Documenten en Downloads op te roepen\n• Controles op grote bestanden, duplicaten en installers blijven nu binnen de mappen die u expliciet hebt gekoppeld\n• De Bestanden-pagina heeft nu een duidelijkere maptoegangspagina zodat de scanscope begrijpelijk blijft\n• De release-metadata is vernieuwd voor deze rustigere bestands-toegangsflow"
+            )
+        case "1.0.9":
+            return localized(
+                "What's new\n• Applications now includes an installed-app picker for uninstall and preference reset tasks\n• You can choose real apps from the Mac instead of typing names or bundle identifiers manually\n• App removal is more reliable for items in both /Applications and ~/Applications\n• The applications flow now feels closer to a dedicated app manager while keeping the EasyComp updater and cleanup tools",
+                "Wat is er nieuw\n• Apps bevat nu een geïnstalleerde-appkiezer voor verwijderen en voorkeuren resetten\n• U kunt echte apps van de Mac kiezen in plaats van handmatig namen of bundle-identifiers te typen\n• App-verwijdering werkt nu betrouwbaarder voor onderdelen in zowel /Applications als ~/Applications\n• De apps-flow voelt nu meer als een echte appmanager, terwijl de EasyComp-updater en opschoonhulpmiddelen behouden blijven"
+            )
+        case "1.0.8":
+            return localized(
+                "What's new\n• Reworked app shell with a cleaner Home dashboard and quicker stats\n• Sidebar navigation now feels calmer and closer to a polished Mac cleaner layout\n• File, application, and maintenance routes are more focused while keeping the custom updater and EasyComp-specific tools\n• The About page and preview scenes now reflect the rebrand pass",
+                "Wat is er nieuw\n• Vernieuwde app-shell met een rustiger Home-dashboard en snellere statuskaarten\n• De navigatie links voelt nu kalmer en meer als een verzorgde Mac-cleaner-indeling\n• Bestands-, app- en onderhoudsroutes zijn gerichter geworden, terwijl de maatwerk-updater en EasyComp-tools behouden blijven\n• De Over-pagina en voorbeeldscenes tonen nu ook deze rebrand-pass"
+            )
+        case "1.0.7":
+            return localized(
+                "What's new\n• New calmer dashboard layout inspired by modern Mac cleaner apps\n• Applications now include an orphaned files review for leftover app data without a matching installed app\n• Task cards and module pages are less cluttered and easier to scan\n• The About page and developer preview scenes were refreshed for the new dashboard pass",
+                "Wat is er nieuw\n• Nieuwe rustigere dashboard-indeling, geinspireerd op moderne Mac-cleaners\n• Apps bevat nu een controle voor verweesde bestanden met appresten zonder bijbehorende geïnstalleerde app\n• Taakkaarten en paginaworkflows zijn minder druk en sneller te overzien\n• De Over-pagina en ontwikkelvoorbeelden zijn vernieuwd voor deze dashboard-pass"
+            )
+        case "1.0.6":
+            return localized(
+                "What's new\n• New installer cleanup review for DMG, PKG, and XIP files\n• Uninstall now removes common user-library leftovers after the app bundle is removed\n• Files review is better aligned with safer cleanup workflows inspired by modern open-source Mac cleaners\n• The About page and preview changelog now reflect the new cleanup tools",
+                "Wat is er nieuw\n• Nieuwe installer-opruimcontrole voor DMG-, PKG- en XIP-bestanden\n• Verwijderen van apps ruimt nu ook gebruikelijke restbestanden in de gebruikersbibliotheek op\n• Bestandscontrole sluit nu beter aan op veiligere opschoonflows uit moderne open-source Mac-cleaners\n• De Over-pagina en preview-changelog tonen nu ook deze nieuwe opschoonhulpmiddelen"
+            )
         case "1.0.5":
             return localized(
                 "What's new\n• Large and stale files can now be reviewed and removed inside the app\n• Duplicate scans now keep one suggested original and let you remove the extra copies\n• File review scenes are clearer for manual cleanup work\n• Developer preview data now mirrors the new file cleanup flow",

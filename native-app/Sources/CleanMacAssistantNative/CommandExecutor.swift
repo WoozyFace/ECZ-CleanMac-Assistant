@@ -104,13 +104,7 @@ actor MaintenanceCommandExecutor {
             guard let input = request.input, !input.isEmpty else {
                 return CommandExecutionResult(success: false, summary: localized("No app name was entered.", "Er is geen appnaam ingevuld."), output: "")
             }
-            let appPath = "/Applications/\(input).app"
-            let exists = await runShell("test -d \(shellQuote(appPath))", requiresAdmin: false)
-            guard exists.isSuccess else {
-                return CommandExecutionResult(success: false, summary: localized("\(input).app was not found in /Applications.", "\(input).app is niet gevonden in /Applications."), output: exists.combined)
-            }
-            let result = await runShell("rm -rf \(shellQuote(appPath))", requiresAdmin: true)
-            return translate(result, success: localized("\(input).app was removed.", "\(input).app is verwijderd."), failure: localized("Failed to remove \(input).app.", "Het verwijderen van \(input).app is mislukt."))
+            return await uninstallApplication(named: input)
 
         case .resetPreferences:
             guard let input = request.input, !input.isEmpty else {
@@ -288,6 +282,13 @@ actor MaintenanceCommandExecutor {
             echo '\(localized("Files older than 180 days in Desktop, Documents, and Downloads", "Bestanden ouder dan 180 dagen in Bureaublad, Documenten en Downloads"))'
             echo '---------------------------------------------------------------'
             find ~/Desktop ~/Documents ~/Downloads -type f -mtime +180 2>/dev/null | head -200
+            """
+
+        case "__INSTALLER_REVIEW__":
+            resolvedCommand = """
+            echo '\(localized("Installer files in Downloads, Desktop, and Homebrew cache", "Installatiebestanden in Downloads, Bureaublad en Homebrew-cache"))'
+            echo '--------------------------------------------------------------'
+            find ~/Downloads ~/Desktop ~/Library/Caches/Homebrew -type f \\( -iname '*.dmg' -o -iname '*.pkg' -o -iname '*.mpkg' -o -iname '*.xip' -o -iname '*.iso' \\) 2>/dev/null | head -200
             """
 
         case "__CLOUD_AUDIT__":
@@ -497,6 +498,281 @@ actor MaintenanceCommandExecutor {
             return "\(friendlyName): \(result.summary)"
         } else {
             return "\(friendlyName): \(result.summary)\n\(result.output)"
+        }
+    }
+
+    private func uninstallApplication(named rawName: String) async -> CommandExecutionResult {
+        let trimmedInput = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let appURL = locateInstalledApplication(named: trimmedInput) else {
+            return CommandExecutionResult(
+                success: false,
+                summary: localized("The selected app could not be found on this Mac.", "De geselecteerde app kon niet op deze Mac worden gevonden."),
+                output: ""
+            )
+        }
+
+        let bundle = Bundle(url: appURL)
+        let displayName = resolvedDisplayName(for: appURL, bundle: bundle)
+        let bundleIdentifier = bundle?.bundleIdentifier
+        let providedName = appURL.deletingPathExtension().lastPathComponent
+        let leftoverPaths = commonLeftoverPaths(
+            appNameVariants: appNameVariants(for: appURL, bundle: bundle, providedName: providedName),
+            bundleIdentifier: bundleIdentifier
+        )
+
+        var outputLines: [String] = [
+            localized("App bundle: \(appURL.lastPathComponent)", "Appbundle: \(appURL.lastPathComponent)")
+        ]
+
+        if let bundleIdentifier {
+            outputLines.append(localized("Bundle ID: \(bundleIdentifier)", "Bundle-ID: \(bundleIdentifier)"))
+        }
+
+        do {
+            try fileManager.removeItem(at: appURL)
+            outputLines.append(
+                localized(
+                    "Removed the app bundle from Applications without administrator access.",
+                    "De appbundle is zonder beheerdersrechten uit Applications verwijderd."
+                )
+            )
+        } catch {
+            if isPermissionError(error) {
+                let result = await runShell("rm -rf \(shellQuote(appURL.path))", requiresAdmin: true)
+
+                if isAdministratorPromptCancelled(result) {
+                    return CommandExecutionResult(
+                        success: false,
+                        summary: localized("Administrator access was cancelled.", "Beheerdersrechten zijn geannuleerd."),
+                        output: result.combined
+                    )
+                }
+
+                guard result.isSuccess else {
+                    return CommandExecutionResult(
+                        success: false,
+                        summary: localized("Failed to remove \(displayName).", "Het verwijderen van \(displayName) is mislukt."),
+                        output: result.combined
+                    )
+                }
+
+                outputLines.append(
+                    localized(
+                        "Removed the app bundle from Applications after requesting administrator access.",
+                        "De appbundle is uit Applications verwijderd na het vragen om beheerdersrechten."
+                    )
+                )
+            } else {
+                return CommandExecutionResult(
+                    success: false,
+                    summary: localized("Failed to remove \(displayName).", "Het verwijderen van \(displayName) is mislukt."),
+                    output: error.localizedDescription
+                )
+            }
+        }
+
+        let leftoversReport = removePaths(leftoverPaths, requiresAdmin: false)
+        let removedLeftoverCount = leftoversReport.removedCount
+        let protectedLeftoverCount = leftoversReport.protectedPaths.count
+        let failedLeftoverCount = leftoversReport.failures.count
+
+        if leftoverPaths.isEmpty || removedLeftoverCount == 0 && leftoversReport.missingPaths.count == leftoverPaths.count {
+            outputLines.append(
+                localized(
+                    "No common leftover files were found in your user Library.",
+                    "Er zijn geen gebruikelijke restbestanden gevonden in uw gebruikersbibliotheek."
+                )
+            )
+        } else if removedLeftoverCount > 0 {
+            outputLines.append(
+                localized(
+                    "Removed \(removedLeftoverCount) common leftover item(s) from your user Library.",
+                    "\(removedLeftoverCount) gebruikelijke restbestand(en) uit uw gebruikersbibliotheek verwijderd."
+                )
+            )
+        }
+
+        if protectedLeftoverCount > 0 {
+            outputLines.append(
+                localized(
+                    "Some leftovers were skipped because macOS protects those locations.",
+                    "Sommige restbestanden zijn overgeslagen omdat macOS die locaties beschermt."
+                )
+            )
+            outputLines.append(permissionGuidance(for: .generic))
+            outputLines.append(contentsOf: abbreviatedProtectedPathLines(leftoversReport.protectedPaths))
+        }
+
+        if failedLeftoverCount > 0 {
+            outputLines.append(localized("Some leftovers still need manual cleanup:", "Sommige restbestanden moeten nog handmatig worden opgeschoond:"))
+            outputLines.append(contentsOf: leftoversReport.failures.prefix(6))
+        }
+
+        let summary: String
+        if failedLeftoverCount > 0 {
+            summary = localized(
+                "\(displayName) was removed, but some leftovers still need attention.",
+                "\(displayName) is verwijderd, maar sommige restbestanden vragen nog aandacht."
+            )
+        } else if protectedLeftoverCount > 0 {
+            summary = localized(
+                "\(displayName) was removed, but some protected leftovers were skipped.",
+                "\(displayName) is verwijderd, maar sommige beschermde restbestanden zijn overgeslagen."
+            )
+        } else if removedLeftoverCount > 0 {
+            summary = localized(
+                "\(displayName) and common leftovers were removed.",
+                "\(displayName) en gebruikelijke restbestanden zijn verwijderd."
+            )
+        } else {
+            summary = localized(
+                "\(displayName) was removed.",
+                "\(displayName) is verwijderd."
+            )
+        }
+
+        return CommandExecutionResult(
+            success: failedLeftoverCount == 0,
+            summary: summary,
+            output: outputLines.joined(separator: "\n")
+        )
+    }
+
+    private func locateInstalledApplication(named rawName: String) -> URL? {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("/") {
+            let directURL = URL(fileURLWithPath: trimmed, isDirectory: true)
+            if fileManager.fileExists(atPath: directURL.path), directURL.pathExtension == "app" {
+                return directURL
+            }
+        }
+
+        let normalizedName = normalizedApplicationName(trimmed)
+        let applicationRoots = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        ]
+
+        for root in applicationRoots where fileManager.fileExists(atPath: root.path) {
+            let exactURL = root.appendingPathComponent(normalizedName + ".app", isDirectory: true)
+            if fileManager.fileExists(atPath: exactURL.path) {
+                return exactURL
+            }
+
+            let contents = (try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+            if let match = contents.first(where: { candidate in
+                candidate.pathExtension == "app"
+                    && candidate.deletingPathExtension().lastPathComponent.compare(normalizedName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+            }) {
+                return match
+            }
+        }
+
+        return nil
+    }
+
+    private func normalizedApplicationName(_ rawName: String) -> String {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasSuffix(".app") {
+            return String(trimmed.dropLast(4))
+        }
+        return trimmed
+    }
+
+    private func resolvedDisplayName(for appURL: URL, bundle: Bundle?) -> String {
+        (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? appURL.deletingPathExtension().lastPathComponent
+    }
+
+    private func appNameVariants(for appURL: URL, bundle: Bundle?, providedName: String) -> [String] {
+        let candidates = [
+            normalizedApplicationName(providedName),
+            appURL.deletingPathExtension().lastPathComponent,
+            bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String,
+            bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+        ]
+
+        var ordered: [String] = []
+        var seen = Set<String>()
+
+        for name in candidates
+            .compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .filter({ !$0.isEmpty })
+        {
+            let key = name.lowercased()
+            if seen.insert(key).inserted {
+                ordered.append(name)
+            }
+        }
+
+        return ordered
+    }
+
+    private func commonLeftoverPaths(appNameVariants: [String], bundleIdentifier: String?) -> [String] {
+        let homeURL = fileManager.homeDirectoryForCurrentUser
+        var paths = Set<String>()
+
+        let namedRoots = [
+            homeURL.appendingPathComponent("Library/Application Support", isDirectory: true),
+            homeURL.appendingPathComponent("Library/Caches", isDirectory: true),
+            homeURL.appendingPathComponent("Library/Logs", isDirectory: true)
+        ]
+
+        for root in namedRoots {
+            exactMatches(in: root, candidateNames: appNameVariants).forEach { paths.insert($0) }
+        }
+
+        let preferencesURL = homeURL.appendingPathComponent("Library/Preferences", isDirectory: true)
+        exactMatches(in: preferencesURL, candidateNames: appNameVariants).forEach { paths.insert($0) }
+
+        if let bundleIdentifier {
+            let exactRelativePaths = [
+                "Library/Application Support/\(bundleIdentifier)",
+                "Library/Caches/\(bundleIdentifier)",
+                "Library/Logs/\(bundleIdentifier)",
+                "Library/Preferences/\(bundleIdentifier).plist",
+                "Library/Saved Application State/\(bundleIdentifier).savedState",
+                "Library/Containers/\(bundleIdentifier)",
+                "Library/WebKit/\(bundleIdentifier)",
+                "Library/HTTPStorages/\(bundleIdentifier)"
+            ]
+
+            for relativePath in exactRelativePaths {
+                let url = homeURL.appendingPathComponent(relativePath)
+                if fileManager.fileExists(atPath: url.path) {
+                    paths.insert(url.path)
+                }
+            }
+
+            let byHostPreferencesURL = homeURL.appendingPathComponent("Library/Preferences/ByHost", isDirectory: true)
+            prefixMatches(in: byHostPreferencesURL, prefix: bundleIdentifier + ".").forEach { paths.insert($0) }
+        }
+
+        return paths.sorted()
+    }
+
+    private func exactMatches(in directory: URL, candidateNames: [String]) -> [String] {
+        let loweredNames = Set(candidateNames.map { $0.lowercased() })
+        guard !loweredNames.isEmpty else { return [] }
+
+        let children = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return children.compactMap { child in
+            let lastPathComponent = child.lastPathComponent.lowercased()
+            let stem = child.deletingPathExtension().lastPathComponent.lowercased()
+            if loweredNames.contains(lastPathComponent) || loweredNames.contains(stem) {
+                return child.path
+            }
+            return nil
+        }
+    }
+
+    private func prefixMatches(in directory: URL, prefix: String) -> [String] {
+        let loweredPrefix = prefix.lowercased()
+        let children = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return children.compactMap { child in
+            child.lastPathComponent.lowercased().hasPrefix(loweredPrefix) ? child.path : nil
         }
     }
 

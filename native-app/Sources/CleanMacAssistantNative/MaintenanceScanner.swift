@@ -39,6 +39,19 @@ private struct FileReviewCandidate {
     let isStale: Bool
 }
 
+private struct InstallerReviewCandidate {
+    let url: URL
+    let size: Int64
+    let modificationDate: Date?
+}
+
+private struct OrphanedBundleGroup {
+    let identifier: String
+    let urls: [URL]
+    let totalBytes: Int64
+    let latestModificationDate: Date?
+}
+
 enum TaskScanState: Equatable {
     case idle
     case scanning
@@ -49,8 +62,12 @@ enum TaskScanState: Equatable {
 actor MaintenanceScanner {
     private let largeFileThresholdBytes: Int64 = 500 * 1_024 * 1_024
     private let staleFileAgeInDays = 180
+    private let installerSelectionAgeInDays = 14
     private let maxLargeOldReviewItems = 120
     private let maxDuplicateReviewItems = 120
+    private let maxInstallerReviewItems = 120
+    private let maxOrphanedReviewItems = 80
+    private let installerExtensions: Set<String> = ["dmg", "pkg", "mpkg", "xip", "iso"]
     private let fileManager = FileManager.default
     private let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -312,6 +329,8 @@ actor MaintenanceScanner {
             return .unavailable("This task does a full safety scan first when you run it.")
         case .uninstall, .reset:
             return .unavailable("This task depends on the app or settings you choose, so there is no fixed preview yet.")
+        case .orphanedFiles:
+            return orphanedFilesReview()
         case .disk:
             return .ready(
                 TaskScanFinding(
@@ -325,6 +344,8 @@ actor MaintenanceScanner {
             return largeOldFilesReview()
         case .duplicates:
             return duplicateFilesReview()
+        case .installerFiles:
+            return installerFilesReview()
         case .checkDependencies:
             return .ready(
                 TaskScanFinding(
@@ -397,15 +418,28 @@ actor MaintenanceScanner {
     }
 
     private func largeOldFilesReview() -> TaskScanState {
+        let accessEntries = ManagedFileAccessStore.beginAccess()
+        defer { ManagedFileAccessStore.endAccess(accessEntries) }
+
+        let roots = managedReviewRootDirectories(from: accessEntries)
+        guard !roots.isEmpty else {
+            return .unavailable(
+                localized(
+                    "Choose folders in Files first so large-file scans do not trigger repeated macOS permission prompts.",
+                    "Kies eerst mappen in Bestanden zodat scans op grote bestanden geen herhaalde macOS-toestemmingsmeldingen geven."
+                )
+            )
+        }
+
         let cutoffDate = Calendar.current.date(byAdding: .day, value: -staleFileAgeInDays, to: Date()) ?? Date.distantPast
-        let candidates = reviewRootDirectories().flatMap { collectLargeOldCandidates(in: $0, cutoffDate: cutoffDate) }
+        let candidates = roots.flatMap { collectLargeOldCandidates(in: $0, cutoffDate: cutoffDate) }
 
         guard !candidates.isEmpty else {
             return .ready(
                 TaskScanFinding(
                     message: localized(
-                        "No large or stale files were found in Desktop, Documents, or Downloads right now.",
-                        "Er zijn op dit moment geen grote of verouderde bestanden gevonden in Bureaublad, Documenten of Downloads."
+                        "No large or stale files were found in the folders you connected for file review.",
+                        "Er zijn op dit moment geen grote of verouderde bestanden gevonden in de mappen die u voor bestandscontrole hebt gekoppeld."
                     ),
                     reclaimableBytes: 0,
                     itemCount: 0,
@@ -452,17 +486,15 @@ actor MaintenanceScanner {
             )
         }
 
-        let roots = reviewRootDirectories()
+        let accessEntries = ManagedFileAccessStore.beginAccess()
+        defer { ManagedFileAccessStore.endAccess(accessEntries) }
+
+        let roots = managedReviewRootDirectories(from: accessEntries)
         guard !roots.isEmpty else {
-            return .ready(
-                TaskScanFinding(
-                    message: localized(
-                        "The Desktop, Documents, and Downloads folders are not available for duplicate review right now.",
-                        "De mappen Bureaublad, Documenten en Downloads zijn nu niet beschikbaar voor duplicaatcontrole."
-                    ),
-                    reclaimableBytes: 0,
-                    itemCount: 0,
-                    components: []
+            return .unavailable(
+                localized(
+                    "Choose folders in Files first so duplicate scans do not trigger repeated macOS permission prompts.",
+                    "Kies eerst mappen in Bestanden zodat duplicaatscans geen herhaalde macOS-toestemmingsmeldingen geven."
                 )
             )
         }
@@ -474,8 +506,8 @@ actor MaintenanceScanner {
             return .ready(
                 TaskScanFinding(
                     message: localized(
-                        "No duplicate file groups were found in Desktop, Documents, or Downloads.",
-                        "Er zijn geen groepen met dubbele bestanden gevonden in Bureaublad, Documenten of Downloads."
+                        "No duplicate file groups were found in the folders you connected for file review.",
+                        "Er zijn geen groepen met dubbele bestanden gevonden in de mappen die u voor bestandscontrole hebt gekoppeld."
                     ),
                     reclaimableBytes: 0,
                     itemCount: 0,
@@ -548,6 +580,100 @@ actor MaintenanceScanner {
                 reclaimableBytes: totalBytes,
                 itemCount: visibleComponents.count,
                 components: visibleComponents
+            )
+        )
+    }
+
+    private func installerFilesReview() -> TaskScanState {
+        let accessEntries = ManagedFileAccessStore.beginAccess()
+        defer { ManagedFileAccessStore.endAccess(accessEntries) }
+
+        let candidates = installerReviewDirectories(from: accessEntries)
+            .flatMap { collectInstallerCandidates(in: $0) }
+
+        guard !candidates.isEmpty else {
+            return .ready(
+                TaskScanFinding(
+                    message: localized(
+                        "No installer files were found in the folders you connected for file review or in the Homebrew cache right now.",
+                        "Er zijn op dit moment geen installatiebestanden gevonden in de mappen die u voor bestandscontrole hebt gekoppeld of in de Homebrew-cache."
+                    ),
+                    reclaimableBytes: 0,
+                    itemCount: 0,
+                    components: []
+                )
+            )
+        }
+
+        let sortedCandidates = candidates.sorted(by: isPreferredInstallerCandidate(_:_:))
+        let visibleCandidates = Array(sortedCandidates.prefix(maxInstallerReviewItems))
+        let components = visibleCandidates.map(installerFileComponent(for:))
+        let totalBytes = components.reduce(Int64(0)) { $0 + ($1.reclaimableBytes ?? 0) }
+
+        let message: String
+        if candidates.count > visibleCandidates.count {
+            message = localized(
+                "Review the oldest installer files below and remove only the DMG, PKG, or XIP files you no longer need. Showing the first \(visibleCandidates.count) items here.",
+                "Bekijk hieronder de oudste installatiebestanden en verwijder alleen de DMG-, PKG- of XIP-bestanden die u niet meer nodig hebt. Hier worden de eerste \(visibleCandidates.count) items getoond."
+            )
+        } else {
+            message = localized(
+                "Review the installer files below and remove only the DMG, PKG, or XIP files you no longer need.",
+                "Bekijk hieronder de installatiebestanden en verwijder alleen de DMG-, PKG- of XIP-bestanden die u niet meer nodig hebt."
+            )
+        }
+
+        return .ready(
+            TaskScanFinding(
+                message: message,
+                reclaimableBytes: totalBytes,
+                itemCount: components.count,
+                components: components
+            )
+        )
+    }
+
+    private func orphanedFilesReview() -> TaskScanState {
+        let installedBundleIdentifiers = installedApplicationBundleIdentifiers()
+        let groups = collectOrphanedBundleGroups(excluding: installedBundleIdentifiers)
+
+        guard !groups.isEmpty else {
+            return .ready(
+                TaskScanFinding(
+                    message: localized(
+                        "No obvious orphaned app leftovers were found in the common user Library locations.",
+                        "Er zijn geen duidelijke verweesde appresten gevonden in de gebruikelijke locaties van uw gebruikersbibliotheek."
+                    ),
+                    reclaimableBytes: 0,
+                    itemCount: 0,
+                    components: []
+                )
+            )
+        }
+
+        let visibleGroups = Array(groups.prefix(maxOrphanedReviewItems))
+        let components = visibleGroups.map(orphanedFilesComponent(for:))
+        let totalBytes = components.reduce(Int64(0)) { $0 + ($1.reclaimableBytes ?? 0) }
+
+        let message: String
+        if groups.count > visibleGroups.count {
+            message = localized(
+                "Review the first \(visibleGroups.count) orphaned app data group(s) below and remove only the leftovers you recognize.",
+                "Bekijk hieronder de eerste \(visibleGroups.count) groepen met verweesde appgegevens en verwijder alleen de resten die u herkent."
+            )
+        } else {
+            message = localized(
+                "Review the orphaned app data groups below and remove only the leftovers you recognize.",
+                "Bekijk hieronder de groepen met verweesde appgegevens en verwijder alleen de resten die u herkent."
+            )
+        }
+
+        return .ready(
+            TaskScanFinding(
+                message: message,
+                reclaimableBytes: totalBytes,
+                itemCount: components.count,
+                components: components
             )
         )
     }
@@ -640,10 +766,40 @@ actor MaintenanceScanner {
         fileManager.homeDirectoryForCurrentUser.appendingPathComponent(relativePath)
     }
 
-    private func reviewRootDirectories() -> [URL] {
-        ["Desktop", "Documents", "Downloads"]
-            .map(home)
+    private func managedReviewRootDirectories(from accessEntries: [ManagedFileAccessEntry]) -> [URL] {
+        accessEntries
+            .map(\.url)
+            .map(\.standardizedFileURL)
             .filter { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    private func installerReviewDirectories(from accessEntries: [ManagedFileAccessEntry]) -> [URL] {
+        var directories = managedReviewRootDirectories(from: accessEntries)
+
+        let brewDownloads = home("Library/Caches/Homebrew/Downloads")
+        let brewRoot = home("Library/Caches/Homebrew")
+
+        if fileManager.fileExists(atPath: brewDownloads.path) {
+            directories.append(brewDownloads)
+        } else if fileManager.fileExists(atPath: brewRoot.path) {
+            directories.append(brewRoot)
+        }
+
+        return directories.filter { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    private func orphanedReviewDirectories() -> [URL] {
+        [
+            home("Library/Application Support"),
+            home("Library/Caches"),
+            home("Library/Logs"),
+            home("Library/Preferences"),
+            home("Library/Saved Application State"),
+            home("Library/Containers"),
+            home("Library/WebKit"),
+            home("Library/HTTPStorages")
+        ]
+        .filter { fileManager.fileExists(atPath: $0.path) }
     }
 
     private func shellQuote(_ raw: String) -> String {
@@ -693,6 +849,101 @@ actor MaintenanceScanner {
         return candidates
     }
 
+    private func collectInstallerCandidates(in rootURL: URL) -> [InstallerReviewCandidate] {
+        guard let enumerator = fileManager.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else {
+            return []
+        }
+
+        var candidates: [InstallerReviewCandidate] = []
+
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                  values.isRegularFile == true
+            else {
+                continue
+            }
+
+            let pathExtension = fileURL.pathExtension.lowercased()
+            guard installerExtensions.contains(pathExtension) else { continue }
+
+            candidates.append(
+                InstallerReviewCandidate(
+                    url: fileURL,
+                    size: Int64(values.fileSize ?? 0),
+                    modificationDate: values.contentModificationDate
+                )
+            )
+        }
+
+        return candidates
+    }
+
+    private func installedApplicationBundleIdentifiers() -> Set<String> {
+        let rootDirectories = [
+            URL(fileURLWithPath: "/Applications", isDirectory: true),
+            home("Applications")
+        ]
+
+        var bundleIdentifiers = Set<String>()
+
+        for rootDirectory in rootDirectories where fileManager.fileExists(atPath: rootDirectory.path) {
+            let applications = (try? fileManager.contentsOfDirectory(
+                at: rootDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            for appURL in applications where appURL.pathExtension == "app" {
+                if let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier?.lowercased(), !bundleIdentifier.isEmpty {
+                    bundleIdentifiers.insert(bundleIdentifier)
+                }
+            }
+        }
+
+        return bundleIdentifiers
+    }
+
+    private func collectOrphanedBundleGroups(excluding installedBundleIdentifiers: Set<String>) -> [OrphanedBundleGroup] {
+        var groupedURLs: [String: [URL]] = [:]
+
+        for directory in orphanedReviewDirectories() {
+            let children = (try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            for childURL in children {
+                guard let identifier = orphanedIdentifier(for: childURL),
+                      !installedBundleIdentifiers.contains(identifier),
+                      !shouldIgnoreOrphanedIdentifier(identifier)
+                else {
+                    continue
+                }
+
+                groupedURLs[identifier, default: []].append(childURL)
+            }
+        }
+
+        return groupedURLs.map { identifier, urls in
+            let uniqueURLs = Array(Set(urls.map(\.path))).map(URL.init(fileURLWithPath:))
+            let totalBytes = uniqueURLs.reduce(Int64(0)) { $0 + fileSize(for: $1) }
+            let latestModificationDate = uniqueURLs.compactMap(modificationDate(for:)).max()
+            return OrphanedBundleGroup(
+                identifier: identifier,
+                urls: uniqueURLs.sorted { $0.path < $1.path },
+                totalBytes: totalBytes,
+                latestModificationDate: latestModificationDate
+            )
+        }
+        .sorted(by: isPreferredOrphanedGroup(_:_:))
+    }
+
     private func isPreferredLargeOldCandidate(_ lhs: FileReviewCandidate, _ rhs: FileReviewCandidate) -> Bool {
         let leftPriority = (lhs.isLarge ? 2 : 0) + (lhs.isStale ? 1 : 0)
         let rightPriority = (rhs.isLarge ? 2 : 0) + (rhs.isStale ? 1 : 0)
@@ -712,6 +963,35 @@ actor MaintenanceScanner {
         }
 
         return lhs.url.path < rhs.url.path
+    }
+
+    private func isPreferredInstallerCandidate(_ lhs: InstallerReviewCandidate, _ rhs: InstallerReviewCandidate) -> Bool {
+        let leftDate = lhs.modificationDate ?? .distantPast
+        let rightDate = rhs.modificationDate ?? .distantPast
+
+        if leftDate != rightDate {
+            return leftDate < rightDate
+        }
+
+        if lhs.size != rhs.size {
+            return lhs.size > rhs.size
+        }
+
+        return lhs.url.path < rhs.url.path
+    }
+
+    private func isPreferredOrphanedGroup(_ lhs: OrphanedBundleGroup, _ rhs: OrphanedBundleGroup) -> Bool {
+        if lhs.totalBytes != rhs.totalBytes {
+            return lhs.totalBytes > rhs.totalBytes
+        }
+
+        let leftDate = lhs.latestModificationDate ?? .distantPast
+        let rightDate = rhs.latestModificationDate ?? .distantPast
+        if leftDate != rightDate {
+            return leftDate < rightDate
+        }
+
+        return lhs.identifier < rhs.identifier
     }
 
     private func largeOldFileComponent(for candidate: FileReviewCandidate) -> TaskScanComponent {
@@ -748,6 +1028,108 @@ actor MaintenanceScanner {
             selectedByDefault: false,
             cleanupAction: .removePath(candidate.url.path, requiresAdmin: false)
         )
+    }
+
+    private func installerFileComponent(for candidate: InstallerReviewCandidate) -> TaskScanComponent {
+        let ageInDays = candidate.modificationDate.map {
+            max(1, Calendar.current.dateComponents([.day], from: $0, to: Date()).day ?? installerSelectionAgeInDays)
+        }
+
+        var lines = [localized("Installer file", "Installatiebestand")]
+        if let ageInDays {
+            lines[0] += localized(" • Last changed \(ageInDays) days ago", " • \(ageInDays) dagen geleden voor het laatst gewijzigd")
+        }
+
+        lines.append(localized("Location: \(displayPath(for: candidate.url))", "Locatie: \(displayPath(for: candidate.url))"))
+
+        if candidate.url.path.contains("/Library/Caches/Homebrew") {
+            lines.append(localized("Source: Homebrew cache", "Bron: Homebrew-cache"))
+        }
+
+        lines.append(localized("Select this installer if you want the app to remove it.", "Selecteer dit installatiebestand als u wilt dat de app het verwijdert."))
+
+        return TaskScanComponent(
+            id: "installer_file_\(stableIdentifier(for: candidate.url.path))",
+            title: candidate.url.lastPathComponent,
+            detail: lines.joined(separator: "\n"),
+            reclaimableBytes: candidate.size,
+            itemCount: 1,
+            selectedByDefault: (ageInDays ?? 0) >= installerSelectionAgeInDays,
+            cleanupAction: .removePath(candidate.url.path, requiresAdmin: false)
+        )
+    }
+
+    private func orphanedFilesComponent(for group: OrphanedBundleGroup) -> TaskScanComponent {
+        let paths = group.urls.map(\.path)
+        let latestAgeText: String
+        if let latestModificationDate = group.latestModificationDate {
+            let ageInDays = max(1, Calendar.current.dateComponents([.day], from: latestModificationDate, to: Date()).day ?? 0)
+            latestAgeText = localized(
+                "Last touched \(ageInDays) days ago",
+                "\(ageInDays) dagen geleden voor het laatst gewijzigd"
+            )
+        } else {
+            latestAgeText = localized("Date unknown", "Datum onbekend")
+        }
+
+        let locationPreview = group.urls.prefix(3).map { displayPath(for: $0) }.joined(separator: "\n")
+        let hiddenCount = max(0, group.urls.count - 3)
+        let detail = [
+            localized("No installed app was found for bundle ID \(group.identifier).", "Er is geen geïnstalleerde app gevonden voor bundle-ID \(group.identifier)."),
+            latestAgeText,
+            locationPreview,
+            hiddenCount > 0 ? localized("+ \(hiddenCount) more location(s)", "+ \(hiddenCount) extra locatie(s)") : nil
+        ]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+
+        return TaskScanComponent(
+            id: "orphaned_\(stableIdentifier(for: group.identifier))",
+            title: group.identifier,
+            detail: detail,
+            reclaimableBytes: group.totalBytes,
+            itemCount: group.urls.count,
+            selectedByDefault: false,
+            cleanupAction: .removePaths(paths, requiresAdmin: false)
+        )
+    }
+
+    private func orphanedIdentifier(for url: URL) -> String? {
+        let lastPathComponent = url.lastPathComponent
+        let stem = url.deletingPathExtension().lastPathComponent
+
+        let candidates = [
+            lastPathComponent,
+            stem.hasSuffix(".savedState") ? String(stem.dropLast(".savedState".count)) : stem
+        ]
+
+        for rawCandidate in candidates {
+            let normalized = rawCandidate.lowercased()
+            guard normalized.contains("."),
+                  normalized.range(of: #"^[a-z0-9][a-z0-9\-]*(\.[a-z0-9][a-z0-9\-_]*){2,}$"#, options: .regularExpression) != nil
+            else {
+                continue
+            }
+
+            return normalized
+        }
+
+        return nil
+    }
+
+    private func shouldIgnoreOrphanedIdentifier(_ identifier: String) -> Bool {
+        let ignoredPrefixes = [
+            "com.apple.",
+            "com.openssh.",
+            "com.oracle.java",
+            "com.microsoft.autoupdate",
+            "group.com.apple.",
+            "group.net.whatsapp",
+            "org.cups.",
+            "io.homebrew."
+        ]
+
+        return ignoredPrefixes.contains(where: { identifier.hasPrefix($0) })
     }
 
     private func preferredDuplicateKeeper(in urls: [URL]) -> URL {

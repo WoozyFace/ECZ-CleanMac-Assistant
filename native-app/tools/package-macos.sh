@@ -11,7 +11,7 @@ TEMP_HOME="${TEMP_HOME:-/tmp/cleanmacassistent-build-home}"
 DEVELOPER_DIR_PATH="${DEVELOPER_DIR_PATH:-/Applications/Xcode.app/Contents/Developer}"
 ASSET_CATALOG_SOURCE="$ROOT_DIR/XcodeSupport/Assets.xcassets"
 
-VERSION="${VERSION:-1.0.5}"
+VERSION="${VERSION:-1.0.10}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
