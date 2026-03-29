@@ -15,6 +15,7 @@ final class AppViewModel: ObservableObject {
     @Published var totalTaskCount = 0
     @Published var currentRunTitle = ""
     @Published var lastRunSummary = localized("No maintenance run yet.", "Nog geen onderhoudsrun uitgevoerd.")
+    @Published var lastRunReport: RunCompletionReport?
     @Published var updateState: UpdateCheckState = .idle
     @Published var reviewTaskID: MaintenanceTaskID?
     @Published var reviewSelections: Set<String> = []
@@ -128,8 +129,18 @@ final class AppViewModel: ObservableObject {
             return localized("No update check yet.", "Nog geen updatecontrole uitgevoerd.")
         case .checking:
             return localized("Checking for a new version...", "Controleren op een nieuwe versie...")
-        case let .upToDate(version):
-            return localized("You already have version \(version).", "U heeft versie \(version) al.")
+        case let .upToDate(currentVersion, latestVersion):
+            if currentVersion == latestVersion {
+                return localized(
+                    "Latest found: version \(latestVersion). This Mac is up to date.",
+                    "Nieuwste gevonden: versie \(latestVersion). Deze Mac is bijgewerkt."
+                )
+            }
+
+            return localized(
+                "Latest in downloads: \(latestVersion). This Mac is already on \(currentVersion).",
+                "Nieuwste in downloads: \(latestVersion). Deze Mac draait al op \(currentVersion)."
+            )
         case let .updateAvailable(version, _, _):
             return localized("Version \(version) is available.", "Versie \(version) is beschikbaar.")
         case let .failed(message):
@@ -143,6 +154,10 @@ final class AppViewModel: ObservableObject {
             "Version \(version) • \(AppBuildFlavor.buildLabel)",
             "Versie \(version) • \(AppBuildFlavor.buildLabel)"
         )
+    }
+
+    var shouldShowActivityConsole: Bool {
+        activityEntries.count > 1 || lastRunReport != nil
     }
 
     var runProgressFraction: Double {
@@ -296,6 +311,7 @@ final class AppViewModel: ObservableObject {
     func beginReview(for task: MaintenanceTaskDefinition) {
         guard !isRunning else { return }
 
+        dismissRunReport()
         Task {
             await ensureReviewData(for: task)
             reviewTaskID = task.id
@@ -318,6 +334,7 @@ final class AppViewModel: ObservableObject {
 
         persistCurrentReviewState()
         closeReview(persist: false)
+        dismissRunReport()
 
         Task {
             await execute(tasks: [task], runTitle: task.title)
@@ -327,6 +344,7 @@ final class AppViewModel: ObservableObject {
     func selectModule(_ moduleID: MaintenanceModuleID) {
         closeReview()
         closeAbout()
+        dismissRunReport()
         #if DEVELOPER_BUILD
         isShowingDeveloperPanel = false
         #endif
@@ -349,6 +367,7 @@ final class AppViewModel: ObservableObject {
 
         closeReview()
         closeAbout()
+        dismissRunReport()
         #if DEVELOPER_BUILD
         isShowingDeveloperPanel = false
         #endif
@@ -372,6 +391,7 @@ final class AppViewModel: ObservableObject {
 
         closeReview()
         closeAbout()
+        dismissRunReport()
         #if DEVELOPER_BUILD
         isShowingDeveloperPanel = false
         #endif
@@ -391,6 +411,7 @@ final class AppViewModel: ObservableObject {
     func runTask(_ task: MaintenanceTaskDefinition) {
         guard !isRunning else { return }
 
+        dismissRunReport()
         if task.prompt != nil || isTaskReviewable(task) {
             beginReview(for: task)
             return
@@ -408,6 +429,7 @@ final class AppViewModel: ObservableObject {
     func openAbout() {
         guard !isRunning else { return }
         closeReview()
+        dismissRunReport()
         #if DEVELOPER_BUILD
         isShowingDeveloperPanel = false
         #endif
@@ -418,11 +440,16 @@ final class AppViewModel: ObservableObject {
         isShowingAbout = false
     }
 
+    func dismissRunReport() {
+        lastRunReport = nil
+    }
+
     #if DEVELOPER_BUILD
     func toggleDeveloperPanel() {
         guard !isRunning else { return }
         closeReview()
         closeAbout()
+        dismissRunReport()
         isShowingDeveloperPanel.toggle()
     }
 
@@ -472,8 +499,20 @@ final class AppViewModel: ObservableObject {
                     detail: localized("Version \(version) is ready.\n\nChangelog:\n\(notes)", "Versie \(version) is klaar.\n\nChangelog:\n\(notes)"),
                     isError: false
                 )
-            case let .upToDate(version):
-                appendActivity(title: localized("Updates", "Updates"), detail: localized("Everything is already up to date on version \(version).", "Alles is al bijgewerkt op versie \(version)."), isError: false)
+            case let .upToDate(currentVersion, latestVersion):
+                let detail: String
+                if currentVersion == latestVersion {
+                    detail = localized(
+                        "The EasyComp download folder currently lists version \(latestVersion). This Mac is already up to date.",
+                        "In de EasyComp-downloadmap staat nu versie \(latestVersion). Deze Mac is al bijgewerkt."
+                    )
+                } else {
+                    detail = localized(
+                        "The EasyComp download folder currently lists version \(latestVersion), while this Mac is already on version \(currentVersion).",
+                        "In de EasyComp-downloadmap staat nu versie \(latestVersion), terwijl deze Mac al op versie \(currentVersion) draait."
+                    )
+                }
+                appendActivity(title: localized("Updates", "Updates"), detail: detail, isError: false)
             case let .failed(message):
                 appendActivity(title: localized("Update check", "Updatecontrole"), detail: message, isError: true)
             case .idle, .checking:
@@ -526,6 +565,7 @@ final class AppViewModel: ObservableObject {
         currentTaskID = nil
         completedTaskCount = 0
         totalTaskCount = tasks.count
+        lastRunReport = nil
 
         for task in tasks {
             taskStates[task.id] = .queued
@@ -571,6 +611,7 @@ final class AppViewModel: ObservableObject {
 
                 let detail = result.output.isEmpty ? result.summary : result.summary + "\n\n" + result.output
                 appendActivity(title: task.title, detail: detail, isError: !result.success)
+                playTaskCompletionSound(success: result.success)
 
                 let refreshedScan = await scanner.scan(taskID: task.id)
                 scanStates[task.id] = refreshedScan
@@ -582,7 +623,16 @@ final class AppViewModel: ObservableObject {
         currentTaskID = nil
         isRunning = false
         lastRunSummary = localized("\(runTitle.appLocalized): \(completedCount) completed, \(skippedCount) skipped, \(failureCount) with issues.", "\(runTitle.appLocalized): \(completedCount) voltooid, \(skippedCount) overgeslagen, \(failureCount) met problemen.")
+        lastRunReport = buildRunReport(
+            title: runTitle,
+            summary: lastRunSummary,
+            completedCount: completedCount,
+            skippedCount: skippedCount,
+            failureCount: failureCount,
+            tasks: tasks
+        )
         appendActivity(title: localized("Run finished", "Run voltooid"), detail: lastRunSummary, isError: failureCount > 0)
+        playRunCompletionSound(hasIssues: failureCount > 0)
 
         currentRunTitle = ""
         completedTaskCount = 0
@@ -732,12 +782,55 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func buildRunReport(
+        title: String,
+        summary: String,
+        completedCount: Int,
+        skippedCount: Int,
+        failureCount: Int,
+        tasks: [MaintenanceTaskDefinition]
+    ) -> RunCompletionReport {
+        let items = tasks.map { task in
+            let state = taskStates[task.id] ?? .idle
+            return RunTaskReport(
+                id: task.id,
+                title: task.title.appLocalized,
+                state: state,
+                summary: state.resultSummary ?? task.subtitle.appLocalized,
+                output: latestTaskOutput(for: task.id)
+            )
+        }
+
+        return RunCompletionReport(
+            title: title.appLocalized,
+            summary: summary,
+            completedCount: completedCount,
+            skippedCount: skippedCount,
+            failureCount: failureCount,
+            timestamp: Date(),
+            tasks: items
+        )
+    }
+
+    private func playTaskCompletionSound(success: Bool) {
+        playSound(named: success ? "Glass" : "Basso")
+    }
+
+    private func playRunCompletionSound(hasIssues: Bool) {
+        playSound(named: hasIssues ? "Basso" : "Hero")
+    }
+
+    private func playSound(named name: String) {
+        NSSound(named: NSSound.Name(name))?.play()
+    }
+
     #if DEVELOPER_BUILD
     func resetDeveloperPreview() {
         closeReview(persist: false)
         closeAbout()
         taskOutputs = [:]
         taskStates = [:]
+        lastRunReport = nil
         updateState = .idle
         currentTaskID = nil
         completedTaskCount = 0
@@ -918,6 +1011,7 @@ final class AppViewModel: ObservableObject {
         currentTaskID = nil
         completedTaskCount = 0
         totalTaskCount = tasks.count
+        lastRunReport = nil
 
         for task in tasks {
             taskStates[task.id] = .queued
@@ -941,6 +1035,7 @@ final class AppViewModel: ObservableObject {
                 taskOutputs[task.id] = result.output
             }
             appendActivity(title: task.title, detail: result.summary + (result.output.isEmpty ? "" : "\n\n" + result.output), isError: false)
+            playTaskCompletionSound(success: true)
 
             completedCount += 1
             completedTaskCount = completedCount
@@ -949,7 +1044,16 @@ final class AppViewModel: ObservableObject {
         currentTaskID = nil
         isRunning = false
         lastRunSummary = localized("\(runTitle.appLocalized): \(completedCount) completed, 0 skipped, 0 with issues.", "\(runTitle.appLocalized): \(completedCount) voltooid, 0 overgeslagen, 0 met problemen.")
+        lastRunReport = buildRunReport(
+            title: runTitle,
+            summary: lastRunSummary,
+            completedCount: completedCount,
+            skippedCount: 0,
+            failureCount: 0,
+            tasks: tasks
+        )
         appendActivity(title: localized("Run finished", "Run voltooid"), detail: lastRunSummary, isError: false)
+        playRunCompletionSound(hasIssues: false)
         currentRunTitle = ""
         completedTaskCount = 0
         totalTaskCount = 0
@@ -1082,7 +1186,7 @@ final class AppViewModel: ObservableObject {
     private func incrementPatchVersion(_ version: String) -> String {
         var parts = version.split(separator: ".").compactMap { Int($0) }
         if parts.isEmpty {
-            return "1.0.2"
+            return "1.0.3"
         }
         if parts.count < 3 {
             parts += Array(repeating: 0, count: 3 - parts.count)
@@ -1104,6 +1208,7 @@ final class AppViewModel: ObservableObject {
         closeAbout()
         taskOutputs = [:]
         taskStates = [:]
+        lastRunReport = nil
         updateState = .idle
         currentTaskID = nil
         completedTaskCount = 0
@@ -1136,8 +1241,8 @@ final class AppViewModel: ObservableObject {
 
     private func developerPreviewChangelog() -> String {
         localized(
-            "What's new\n• Full-page progress workspace\n• Cleaner in-app review flow\n• New About page with EasyComp background\n• Live English and Dutch preview switching\n• Repository-based update checks",
-            "Wat is er nieuw\n• Volledige voortgangswerkruimte op paginaniveau\n• Rustigere reviewflow binnen de app\n• Nieuwe Over-pagina met EasyComp-achtergrond\n• Live wisselen tussen Engels en Nederlands voor previews\n• Updatecontrole via de repository"
+            "What's new\n• Fixed update checks for the EasyComp download folder\n• Calmer progress flow with a persistent results screen\n• Visible scroll bars and lighter copy throughout the app\n• Subtle completion sounds for steps and finished runs",
+            "Wat is er nieuw\n• Updatecontrole hersteld voor de EasyComp-downloadmap\n• Rustigere voortgangsflow met een blijvend resultaatscherm\n• Zichtbare scrollbalken en compactere teksten in de app\n• Subtiele afrondgeluiden per stap en per run"
         )
     }
 

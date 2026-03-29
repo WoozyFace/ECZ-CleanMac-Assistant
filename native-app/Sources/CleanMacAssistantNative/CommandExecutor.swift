@@ -27,7 +27,52 @@ private struct ProcessOutput {
     }
 }
 
+private enum ComponentCleanupStatus {
+    case success(String)
+    case warning(String)
+    case failure(String)
+
+    var message: String {
+        switch self {
+        case let .success(message), let .warning(message), let .failure(message):
+            return message
+        }
+    }
+
+    var isFailure: Bool {
+        if case .failure = self {
+            return true
+        }
+        return false
+    }
+
+    var isWarning: Bool {
+        if case .warning = self {
+            return true
+        }
+        return false
+    }
+}
+
+private struct FileRemovalReport {
+    var removedCount = 0
+    var protectedPaths: [String] = []
+    var missingPaths: [String] = []
+    var failures: [String] = []
+}
+
+private enum ProtectedResourceArea {
+    case trash
+    case safari
+    case messages
+    case mail
+    case cookies
+    case caches
+    case generic
+}
+
 actor MaintenanceCommandExecutor {
+    private let fileManager = FileManager.default
     private let shellBootstrap = "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; export PATH; "
     private let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -79,36 +124,68 @@ actor MaintenanceCommandExecutor {
     private func runSelectedComponents(_ components: [TaskScanComponent], task: MaintenanceTaskDefinition) async -> CommandExecutionResult {
         var outputs: [String] = []
         var failures = 0
+        var warnings = 0
 
         for component in components {
             guard let action = component.cleanupAction else { continue }
 
-            let result: ProcessOutput
+            let status: ComponentCleanupStatus
             switch action {
             case let .removePath(path, requiresAdmin):
-                result = await runShell("rm -rf \(shellQuote(path))", requiresAdmin: requiresAdmin)
+                status = await removalStatus(
+                    for: component,
+                    report: removePaths([path], requiresAdmin: requiresAdmin),
+                    area: protectedResourceArea(for: [path])
+                )
             case let .removePaths(paths, requiresAdmin):
-                let joined = paths.map(shellQuote).joined(separator: " ")
-                result = await runShell("rm -rf \(joined)", requiresAdmin: requiresAdmin)
+                status = await removalStatus(
+                    for: component,
+                    report: removePaths(paths, requiresAdmin: requiresAdmin),
+                    area: protectedResourceArea(for: paths)
+                )
+            case let .removeDirectoryContents(path, requiresAdmin):
+                status = await removalStatus(
+                    for: component,
+                    report: removeDirectoryContents(at: path, requiresAdmin: requiresAdmin),
+                    area: protectedResourceArea(for: [path])
+                )
             case let .shell(command, requiresAdmin):
-                result = await runShell(command, requiresAdmin: requiresAdmin)
+                let result = await runShell(command, requiresAdmin: requiresAdmin)
+                status = cleanupStatus(
+                    for: result,
+                    component: component,
+                    protectedArea: protectedResourceArea(forCommand: command)
+                )
             case let .sqlite(databasePath, statement):
                 let command = "sqlite3 \(shellQuote(databasePath)) \(shellQuote(statement))"
-                result = await runShell(command, requiresAdmin: false)
+                let result = await runShell(command, requiresAdmin: false)
+                status = cleanupStatus(
+                    for: result,
+                    component: component,
+                    protectedArea: protectedResourceArea(for: [databasePath])
+                )
             }
 
-            if result.isSuccess {
-                outputs.append("\(component.title.appLocalized): \(localized("cleaned", "opgeschoond")) \(cleanupScope(for: component)).")
-            } else {
+            outputs.append(status.message)
+            if status.isFailure {
                 failures += 1
-                outputs.append("\(component.title.appLocalized): \(localized("failed", "mislukt")).\n\(result.combined)")
+            } else if status.isWarning {
+                warnings += 1
             }
+        }
+
+        if failures == 0 && warnings == 0 {
+            return CommandExecutionResult(
+                success: true,
+                summary: localized("\(task.title.appLocalized) finished for the selected parts.", "\(task.title.appLocalized) is afgerond voor de geselecteerde onderdelen."),
+                output: outputs.joined(separator: "\n\n")
+            )
         }
 
         if failures == 0 {
             return CommandExecutionResult(
                 success: true,
-                summary: localized("\(task.title.appLocalized) finished for the selected parts.", "\(task.title.appLocalized) is afgerond voor de geselecteerde onderdelen."),
+                summary: localized("\(task.title.appLocalized) finished, but some protected items were skipped.", "\(task.title.appLocalized) is afgerond, maar enkele beschermde onderdelen zijn overgeslagen."),
                 output: outputs.joined(separator: "\n\n")
             )
         }
@@ -389,7 +466,26 @@ actor MaintenanceCommandExecutor {
     }
 
     private func translate(_ result: ProcessOutput, success: String, failure: String) -> CommandExecutionResult {
-        CommandExecutionResult(
+        if isAdministratorPromptCancelled(result) {
+            return CommandExecutionResult(
+                success: false,
+                summary: localized("Administrator access was cancelled.", "Beheerdersrechten zijn geannuleerd."),
+                output: result.combined
+            )
+        }
+
+        if isAutomationPermissionIssue(result) {
+            return CommandExecutionResult(
+                success: false,
+                summary: localized("macOS blocked app automation for this step.", "macOS heeft app-automatisering voor deze stap geblokkeerd."),
+                output: localized(
+                    "Allow CleanMac Assistant to control the requested app in System Settings > Privacy & Security > Automation, then try again.",
+                    "Sta CleanMac Assistant toe om de gevraagde app te bedienen via Systeeminstellingen > Privacy en beveiliging > Automatisering en probeer het daarna opnieuw."
+                ) + (result.combined.isEmpty ? "" : "\n\n" + result.combined)
+            )
+        }
+
+        return CommandExecutionResult(
             success: result.isSuccess,
             summary: result.isSuccess ? success : failure,
             output: result.combined
@@ -431,5 +527,256 @@ actor MaintenanceCommandExecutor {
         raw
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private func removePaths(_ paths: [String], requiresAdmin: Bool) -> FileRemovalReport {
+        guard !requiresAdmin else {
+            return FileRemovalReport(failures: [localized("This cleanup path still expects administrator access.", "Dit opschoonpad verwacht nog steeds beheerdersrechten.")])
+        }
+
+        var report = FileRemovalReport()
+        for path in paths {
+            removeSinglePath(path, report: &report)
+        }
+        return report
+    }
+
+    private func removeDirectoryContents(at path: String, requiresAdmin: Bool) -> FileRemovalReport {
+        guard !requiresAdmin else {
+            return FileRemovalReport(failures: [localized("This cleanup path still expects administrator access.", "Dit opschoonpad verwacht nog steeds beheerdersrechten.")])
+        }
+
+        var report = FileRemovalReport()
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            report.missingPaths.append(path)
+            return report
+        }
+
+        do {
+            let children = try fileManager.contentsOfDirectory(atPath: path)
+            if children.isEmpty {
+                return report
+            }
+
+            for child in children {
+                let childPath = URL(fileURLWithPath: path).appendingPathComponent(child).path
+                removeSinglePath(childPath, report: &report)
+            }
+        } catch {
+            if isPermissionError(error) {
+                report.protectedPaths.append(path)
+            } else {
+                report.failures.append("\(path): \(error.localizedDescription)")
+            }
+        }
+
+        return report
+    }
+
+    private func removeSinglePath(_ path: String, report: inout FileRemovalReport) {
+        guard fileManager.fileExists(atPath: path) else {
+            report.missingPaths.append(path)
+            return
+        }
+
+        do {
+            try fileManager.removeItem(atPath: path)
+            report.removedCount += 1
+        } catch {
+            if isPermissionError(error) {
+                report.protectedPaths.append(path)
+            } else {
+                report.failures.append("\(path): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func removalStatus(for component: TaskScanComponent, report: FileRemovalReport, area: ProtectedResourceArea) async -> ComponentCleanupStatus {
+        if !report.failures.isEmpty {
+            let failureList = report.failures.prefix(6).joined(separator: "\n")
+            return .failure(
+                "\(component.title.appLocalized): \(localized("failed", "mislukt")).\n\(failureList)"
+            )
+        }
+
+        let protectedCount = report.protectedPaths.count
+        let removedCount = report.removedCount
+
+        if protectedCount > 0 && removedCount > 0 {
+            var lines: [String] = [
+                "\(component.title.appLocalized): \(localized("partially cleaned", "gedeeltelijk opgeschoond")) \(cleanupScope(for: component)).",
+                localized("Removed \(removedCount) item(s).", "\(removedCount) item(s) verwijderd."),
+                localized("Skipped \(protectedCount) protected item(s).", "\(protectedCount) beschermd(e) item(s) overgeslagen."),
+                permissionGuidance(for: area)
+            ]
+            lines.append(contentsOf: abbreviatedProtectedPathLines(report.protectedPaths))
+            return .warning(lines.joined(separator: "\n"))
+        }
+
+        if protectedCount > 0 {
+            var lines: [String] = [
+                "\(component.title.appLocalized): \(localized("access needed", "toegang nodig")).",
+                localized("No changes were made because macOS protected this area.", "Er zijn geen wijzigingen gedaan omdat macOS dit gebied beschermt."),
+                permissionGuidance(for: area)
+            ]
+            lines.append(contentsOf: abbreviatedProtectedPathLines(report.protectedPaths))
+            return .failure(lines.joined(separator: "\n"))
+        }
+
+        if removedCount == 0 && !report.missingPaths.isEmpty {
+            return .success(
+                "\(component.title.appLocalized): \(localized("was already clear.", "was al leeg."))"
+            )
+        }
+
+        return .success(
+            "\(component.title.appLocalized): \(localized("cleaned", "opgeschoond")) \(cleanupScope(for: component))."
+        )
+    }
+
+    private func cleanupStatus(for result: ProcessOutput, component: TaskScanComponent, protectedArea: ProtectedResourceArea?) -> ComponentCleanupStatus {
+        if result.isSuccess {
+            return .success(
+                "\(component.title.appLocalized): \(localized("cleaned", "opgeschoond")) \(cleanupScope(for: component))."
+            )
+        }
+
+        if let protectedArea, isPermissionBlocked(result) {
+            var lines: [String] = [
+                "\(component.title.appLocalized): \(localized("access needed", "toegang nodig")).",
+                permissionGuidance(for: protectedArea)
+            ]
+
+            let diagnostics = result.combined.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !diagnostics.isEmpty {
+                lines.append(diagnostics)
+            }
+
+            return .failure(lines.joined(separator: "\n"))
+        }
+
+        return .failure(
+            "\(component.title.appLocalized): \(localized("failed", "mislukt")).\n\(result.combined)"
+        )
+    }
+
+    private func protectedResourceArea(for paths: [String]) -> ProtectedResourceArea {
+        let joined = paths.joined(separator: "\n").lowercased()
+        if joined.contains("/.trash") {
+            return .trash
+        }
+        if joined.contains("/library/safari/") {
+            return .safari
+        }
+        if joined.contains("/library/messages") {
+            return .messages
+        }
+        if joined.contains("com.apple.mail") || joined.contains("/mail downloads") {
+            return .mail
+        }
+        if joined.contains("/library/cookies") || joined.contains("/chrome/default/cookies") || joined.contains("cookies.sqlite") {
+            return .cookies
+        }
+        if joined.contains("/library/caches") {
+            return .caches
+        }
+        return .generic
+    }
+
+    private func protectedResourceArea(forCommand command: String) -> ProtectedResourceArea? {
+        let lowered = command.lowercased()
+        if lowered.contains("messages/chat.db") {
+            return .messages
+        }
+        if lowered.contains("cookies") {
+            return .cookies
+        }
+        if lowered.contains("/library/safari/") {
+            return .safari
+        }
+        return nil
+    }
+
+    private func permissionGuidance(for area: ProtectedResourceArea) -> String {
+        switch area {
+        case .trash:
+            return localized(
+                "Grant CleanMac Assistant Full Disk Access in System Settings > Privacy & Security > Full Disk Access to let the app empty Trash reliably on newer macOS versions.",
+                "Geef CleanMac Assistant volledige schijftoegang via Systeeminstellingen > Privacy en beveiliging > Volledige schijftoegang zodat de app de prullenmand op nieuwere macOS-versies betrouwbaar kan legen."
+            )
+        case .safari:
+            return localized(
+                "Safari data is protected by macOS. Grant Full Disk Access to CleanMac Assistant and close Safari before trying again.",
+                "Safari-gegevens worden door macOS beschermd. Geef CleanMac Assistant volledige schijftoegang en sluit Safari voordat u het opnieuw probeert."
+            )
+        case .messages:
+            return localized(
+                "Messages data is protected by macOS. Grant Full Disk Access to CleanMac Assistant before trying again.",
+                "Berichten-gegevens worden door macOS beschermd. Geef CleanMac Assistant volledige schijftoegang voordat u het opnieuw probeert."
+            )
+        case .mail:
+            return localized(
+                "Mail data is protected by macOS. Grant Full Disk Access to CleanMac Assistant before trying again.",
+                "Mail-gegevens worden door macOS beschermd. Geef CleanMac Assistant volledige schijftoegang voordat u het opnieuw probeert."
+            )
+        case .cookies:
+            return localized(
+                "Browser data can be protected by macOS. Grant Full Disk Access to CleanMac Assistant before trying again.",
+                "Browsergegevens kunnen door macOS worden beschermd. Geef CleanMac Assistant volledige schijftoegang voordat u het opnieuw probeert."
+            )
+        case .caches:
+            return localized(
+                "Some macOS-managed caches are protected. CleanMac Assistant can skip them safely, or you can grant Full Disk Access for deeper cleanup.",
+                "Sommige door macOS beheerde caches zijn beschermd. CleanMac Assistant kan ze veilig overslaan, of u kunt volledige schijftoegang geven voor diepere opschoning."
+            )
+        case .generic:
+            return localized(
+                "macOS blocked this location. Grant CleanMac Assistant Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then try again.",
+                "macOS blokkeerde deze locatie. Geef CleanMac Assistant volledige schijftoegang via Systeeminstellingen > Privacy en beveiliging > Volledige schijftoegang en probeer het daarna opnieuw."
+            )
+        }
+    }
+
+    private func abbreviatedProtectedPathLines(_ paths: [String]) -> [String] {
+        guard !paths.isEmpty else { return [] }
+        var lines = [localized("Protected items:", "Beschermde items:")]
+        lines.append(contentsOf: paths.prefix(5).map { "• \($0)" })
+        if paths.count > 5 {
+            lines.append(localized("• and more…", "• en meer…"))
+        }
+        return lines
+    }
+
+    private func isPermissionError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && (nsError.code == NSFileReadNoPermissionError || nsError.code == NSFileWriteNoPermissionError || nsError.code == 257 || nsError.code == 513) {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain && (nsError.code == 1 || nsError.code == 13) {
+            return true
+        }
+
+        let message = nsError.localizedDescription.lowercased()
+        return message.contains("operation not permitted") || message.contains("permission denied") || message.contains("not permitted")
+    }
+
+    private func isPermissionBlocked(_ result: ProcessOutput) -> Bool {
+        let combined = result.combined.lowercased()
+        return combined.contains("operation not permitted")
+            || combined.contains("permission denied")
+            || combined.contains("unable to open database")
+    }
+
+    private func isAdministratorPromptCancelled(_ result: ProcessOutput) -> Bool {
+        let combined = result.combined.lowercased()
+        return combined.contains("user canceled")
+    }
+
+    private func isAutomationPermissionIssue(_ result: ProcessOutput) -> Bool {
+        let combined = result.combined.lowercased()
+        return combined.contains("not authorized to send apple events")
+            || combined.contains("not permitted to send keystrokes")
+            || combined.contains("automation")
     }
 }

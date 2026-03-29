@@ -136,6 +136,26 @@ enum TaskRunState: Equatable {
             return Color(red: 0.75, green: 0.77, blue: 0.83)
         }
     }
+
+    var resultSummary: String? {
+        switch self {
+        case let .succeeded(summary), let .failed(summary):
+            return summary
+        case .skipped:
+            return localized("Skipped for now.", "Voor nu overgeslagen.")
+        case .idle, .queued, .running:
+            return nil
+        }
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .succeeded, .failed, .skipped:
+            return true
+        case .idle, .queued, .running:
+            return false
+        }
+    }
 }
 
 struct TaskPrompt {
@@ -191,13 +211,32 @@ struct ActivityEntry: Identifiable {
     let isError: Bool
 }
 
+struct RunTaskReport: Identifiable {
+    let id: MaintenanceTaskID
+    let title: String
+    let state: TaskRunState
+    let summary: String
+    let output: String?
+}
+
+struct RunCompletionReport: Identifiable {
+    let id = UUID()
+    let title: String
+    let summary: String
+    let completedCount: Int
+    let skippedCount: Int
+    let failureCount: Int
+    let timestamp: Date
+    let tasks: [RunTaskReport]
+}
+
 enum MaintenanceCatalog {
     static let modules: [MaintenanceModule] = [
         MaintenanceModule(
             id: .smartCare,
             eyebrow: "Recommended first pass",
             title: "Smart Care",
-            subtitle: "A balanced starter lane that prepares your tooling, refreshes memory and network state, and gives the Mac a safe first tune-up.",
+            subtitle: "A calm first pass that prepares your tools, checks safe cleanup areas, and gives your Mac a low-friction tune-up before deeper maintenance.",
             symbolName: "sparkles",
             theme: ModuleTheme(
                 top: Color(red: 0.12, green: 0.25, blue: 0.46),
@@ -205,7 +244,7 @@ enum MaintenanceCatalog {
                 accent: Color(red: 0.50, green: 0.76, blue: 1.0),
                 mist: Color(red: 0.78, green: 0.88, blue: 1.0)
             ),
-            taskIDs: [.checkDependencies, .cache, .ram, .dns, .scripts]
+            taskIDs: [.checkDependencies, .cache, .scripts]
         ),
         MaintenanceModule(
             id: .cleanup,

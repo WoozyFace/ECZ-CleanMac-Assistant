@@ -28,7 +28,11 @@ private enum AppPalette {
 
 private enum AppResources {
     private static let packageResourceBundleName = "CleanMacAssistantNative_CleanMacAssistantNative"
-    private static let brandMarkSubdirectory = "Assets.xcassets/BrandMark.imageset"
+    private static let brandMarkAssetName = NSImage.Name("BrandMark")
+    private static let brandMarkLegacySubdirectories = [
+        "Assets.xcassets/BrandMark.imageset",
+        "Contents/Resources/Assets.xcassets/BrandMark.imageset"
+    ]
 
     private static let packagedBundle: Bundle? = {
         if let resourceURL = Bundle.main.resourceURL {
@@ -47,10 +51,23 @@ private enum AppResources {
         ].compactMap { $0 }
 
         for bundle in candidateBundles {
+            if let image = bundle.image(forResource: brandMarkAssetName) {
+                return image
+            }
+
+            for subdirectory in brandMarkLegacySubdirectories {
+                if let url = bundle.url(
+                    forResource: "brand-mark",
+                    withExtension: "png",
+                    subdirectory: subdirectory
+                ), let image = NSImage(contentsOf: url) {
+                    return image
+                }
+            }
+
             if let url = bundle.url(
                 forResource: "brand-mark",
-                withExtension: "png",
-                subdirectory: brandMarkSubdirectory
+                withExtension: "png"
             ), let image = NSImage(contentsOf: url) {
                 return image
             }
@@ -76,6 +93,17 @@ private struct BrandMarkArtwork: View {
                     .foregroundStyle(Color.white.opacity(0.88))
                     .padding(6)
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func appScrollIndicators() -> some View {
+        if #available(macOS 13.0, *) {
+            self.scrollIndicators(.visible)
+        } else {
+            self
         }
     }
 }
@@ -295,7 +323,7 @@ private struct SidebarPane: View {
         VStack(alignment: .leading, spacing: 22) {
             header
 
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 10) {
                     ForEach(viewModel.modules) { module in
                         Button {
@@ -315,6 +343,7 @@ private struct SidebarPane: View {
                 }
                 .padding(.vertical, 4)
             }
+            .appScrollIndicators()
 
             Spacer(minLength: 0)
 
@@ -616,9 +645,9 @@ private struct ModuleDetailPane: View {
 
     private var overlayIsVisible: Bool {
         #if DEVELOPER_BUILD
-        reviewTask != nil || viewModel.isShowingAbout || viewModel.isRunning || viewModel.isShowingDeveloperPanel
+        reviewTask != nil || viewModel.isShowingAbout || viewModel.isRunning || viewModel.lastRunReport != nil || viewModel.isShowingDeveloperPanel
         #else
-        reviewTask != nil || viewModel.isShowingAbout || viewModel.isRunning
+        reviewTask != nil || viewModel.isShowingAbout || viewModel.isRunning || viewModel.lastRunReport != nil
         #endif
     }
 
@@ -626,7 +655,7 @@ private struct ModuleDetailPane: View {
         ZStack {
             mainBackground
 
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 22) {
                     MainHeroScene(module: module)
 
@@ -662,7 +691,7 @@ private struct ModuleDetailPane: View {
                                     .font(.system(size: 28, weight: .bold, design: .rounded))
                                     .foregroundStyle(AppPalette.textPrimary)
 
-                                Text(localized("Each option below explains what it looks at before you run it.", "Elke optie hieronder legt uit waarnaar gekeken wordt voordat u hem start."))
+                                Text(localized("Pick what you want to check or clean.", "Kies wat u wilt controleren of opschonen."))
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(AppPalette.textTertiary)
                             }
@@ -700,10 +729,13 @@ private struct ModuleDetailPane: View {
                         }
                     }
 
-                    ActivityConsole(tint: module.theme.accent)
+                    if viewModel.shouldShowActivityConsole {
+                        ActivityConsole(tint: module.theme.accent)
+                    }
                 }
                 .padding(30)
             }
+            .appScrollIndicators()
             .blur(radius: overlayIsVisible ? 14 : 0)
             .scaleEffect(overlayIsVisible ? 0.985 : 1)
             .opacity(overlayIsVisible ? 0.42 : 1)
@@ -720,6 +752,12 @@ private struct ModuleDetailPane: View {
 
             if viewModel.isShowingAbout && !viewModel.isRunning {
                 AboutWorkspace(module: module)
+                    .padding(24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            if let report = viewModel.lastRunReport, !viewModel.isRunning {
+                RunCompletionWorkspace(report: report, module: module)
                     .padding(24)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -1173,13 +1211,14 @@ private struct MetricCard: View {
 private struct RunExperienceOverlay: View {
     @EnvironmentObject private var viewModel: AppViewModel
     let module: MaintenanceModule
+    @State private var progressGlow = false
 
     private var progressPercent: Int {
         Int(viewModel.runProgressFraction * 100)
     }
 
     private var recentEntries: [ActivityEntry] {
-        Array(viewModel.activityEntries.prefix(4))
+        Array(viewModel.activityEntries.prefix(3))
     }
 
     var body: some View {
@@ -1218,7 +1257,7 @@ private struct RunExperienceOverlay: View {
             VStack(alignment: .leading, spacing: 28) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(localized("Running Inside The App", "Bezig in de app"))
+                        Text(localized("Working", "Bezig"))
                             .font(.system(size: 12, weight: .bold, design: .rounded))
                             .kerning(1.4)
                             .foregroundStyle(module.theme.mist.opacity(0.92))
@@ -1248,7 +1287,7 @@ private struct RunExperienceOverlay: View {
                         ZStack {
                             Circle()
                                 .stroke(Color.white.opacity(0.10), lineWidth: 16)
-                                .frame(width: 164, height: 164)
+                                .frame(width: 154, height: 154)
 
                             Circle()
                                 .trim(from: 0, to: max(viewModel.runProgressFraction, 0.04))
@@ -1259,18 +1298,23 @@ private struct RunExperienceOverlay: View {
                                     ),
                                     style: StrokeStyle(lineWidth: 16, lineCap: .round)
                                 )
-                                .frame(width: 164, height: 164)
+                                .frame(width: 154, height: 154)
                                 .rotationEffect(.degrees(-90))
 
                             Circle()
                                 .stroke(tint.opacity(0.22), lineWidth: 1)
-                                .frame(width: 176, height: 176)
+                                .frame(width: 168, height: 168)
+
+                            Circle()
+                                .fill(tint.opacity(progressGlow ? 0.22 : 0.12))
+                                .frame(width: 86, height: 86)
+                                .blur(radius: progressGlow ? 24 : 14)
 
                             VStack(spacing: 6) {
                                 Text("\(progressPercent)%")
                                     .font(.system(size: 34, weight: .bold, design: .rounded))
                                     .foregroundStyle(AppPalette.textPrimary)
-                                Text(localized("completed", "voltooid"))
+                                Text(localized("done", "klaar"))
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(AppPalette.textTertiary)
                             }
@@ -1292,6 +1336,8 @@ private struct RunExperienceOverlay: View {
                     }
 
                     GeometryReader { proxy in
+                        let filledWidth = max(proxy.size.width * max(viewModel.runProgressFraction, 0.02), 18)
+
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(Color.white.opacity(0.07))
@@ -1304,36 +1350,62 @@ private struct RunExperienceOverlay: View {
                                         endPoint: .trailing
                                     )
                                 )
-                                .frame(width: max(proxy.size.width * max(viewModel.runProgressFraction, 0.02), 18))
+                                .frame(width: filledWidth)
+                                .shadow(color: tint.opacity(progressGlow ? 0.42 : 0.22), radius: progressGlow ? 16 : 10)
+                                .overlay {
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    .clear,
+                                                    Color.white.opacity(progressGlow ? 0.08 : 0.0),
+                                                    Color.white.opacity(progressGlow ? 0.42 : 0.14),
+                                                    .clear
+                                                ],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                        .frame(width: min(140, filledWidth))
+                                        .offset(x: progressGlow ? max(filledWidth - 110, 0) : 0)
+                                }
+                                .overlay(alignment: .trailing) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.white.opacity(progressGlow ? 0.56 : 0.26))
+                                            .frame(width: 28, height: 28)
+                                            .blur(radius: progressGlow ? 12 : 6)
+
+                                        Circle()
+                                            .fill(Color.white.opacity(0.94))
+                                            .frame(width: 12, height: 12)
+                                    }
+                                    .offset(x: -2)
+                                }
                         }
                     }
                     .frame(height: 18)
                 }
 
-                HStack(spacing: 16) {
-                    runInfoCard(
-                        title: localized("Current page", "Huidige pagina"),
-                        value: module.title.appLocalized,
-                        caption: localized("Everything stays in this interface while the run is active.", "Alles blijft in deze interface terwijl de run actief is."),
-                        tint: tint
-                    )
-                    runInfoCard(
-                        title: localized("Last summary", "Laatste samenvatting"),
-                        value: viewModel.lastRunSummary,
-                        caption: localized("The activity feed below updates live with each step.", "De activiteitenfeed hieronder werkt live bij na elke stap."),
+                HStack(spacing: 10) {
+                    progressChip(text: module.title.appLocalized, tint: tint)
+                    progressChip(
+                        text: localized(
+                            "\(viewModel.completedTaskCount) / \(max(viewModel.totalTaskCount, 1)) steps",
+                            "\(viewModel.completedTaskCount) / \(max(viewModel.totalTaskCount, 1)) stappen"
+                        ),
                         tint: AppPalette.iceBlue
                     )
+                    progressChip(text: localized("Stay open", "Blijft open"), tint: AppPalette.pinkGlow)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text(localized("Live activity", "Live activiteit"))
+                        Text(localized("Recent", "Recent"))
                             .font(.system(size: 24, weight: .bold, design: .rounded))
                             .foregroundStyle(AppPalette.textPrimary)
 
                         Spacer()
-
-                        StatusBadge(text: localized("No pop-up flow", "Geen losse pop-ups"), tint: tint)
                     }
 
                     VStack(spacing: 10) {
@@ -1360,6 +1432,7 @@ private struct RunExperienceOverlay: View {
                                     Text(entry.detail)
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(entry.isError ? AppPalette.error.opacity(0.94) : AppPalette.textSecondary)
+                                        .lineLimit(3)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -1380,29 +1453,239 @@ private struct RunExperienceOverlay: View {
             .padding(32)
         }
         .shadow(color: tint.opacity(0.22), radius: 36, y: 20)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
+                progressGlow = true
+            }
+        }
     }
 
-    @ViewBuilder
-    private func runInfoCard(title: String, value: String, caption: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func progressChip(text: String, tint: Color) -> some View {
+        Text(text.appLocalized)
+            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .foregroundStyle(AppPalette.textPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.14))
+                    .overlay(
+                        Capsule()
+                            .stroke(tint.opacity(0.18), lineWidth: 1)
+                    )
+            )
+    }
+}
+
+private struct RunCompletionWorkspace: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    let report: RunCompletionReport
+    let module: MaintenanceModule
+
+    private var tint: Color {
+        report.failureCount > 0 ? AppPalette.error : module.theme.accent
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(localized("Results", "Resultaten"))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .kerning(1.4)
+                        .foregroundStyle(module.theme.mist.opacity(0.92))
+                        .textCase(.uppercase)
+
+                    Text(report.title)
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppPalette.textPrimary)
+
+                    Text(report.summary.appLocalized)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(AppPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    Text(report.timestamp.formatted(date: .abbreviated, time: .shortened))
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(AppPalette.textTertiary)
+
+                    Button(localized("Close", "Sluiten")) {
+                        viewModel.dismissRunReport()
+                    }
+                    .buttonStyle(SecondaryGlassButtonStyle())
+                }
+            }
+            .padding(28)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.07))
+                .frame(height: 1)
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack(spacing: 16) {
+                        resultMetric(
+                            title: localized("Done", "Klaar"),
+                            value: "\(report.completedCount)",
+                            tint: AppPalette.success
+                        )
+                        resultMetric(
+                            title: localized("Skipped", "Overgeslagen"),
+                            value: "\(report.skippedCount)",
+                            tint: AppPalette.iceBlue
+                        )
+                        resultMetric(
+                            title: localized("Issues", "Problemen"),
+                            value: "\(report.failureCount)",
+                            tint: report.failureCount > 0 ? AppPalette.error : tint
+                        )
+                    }
+
+                    if report.failureCount > 0 {
+                        Text(localized("A few items need attention. Open the details below for the exact reason.", "Een paar onderdelen vragen aandacht. Open hieronder de details voor de exacte reden."))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(AppPalette.error.opacity(0.92))
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                    .fill(AppPalette.error.opacity(0.08))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                            .stroke(AppPalette.error.opacity(0.18), lineWidth: 1)
+                                    )
+                            )
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(localized("Task results", "Taakresultaten"))
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppPalette.textPrimary)
+
+                        ForEach(report.tasks) { item in
+                            RunCompletionTaskRow(task: item, tint: tint)
+                        }
+                    }
+                }
+                .padding(28)
+            }
+            .appScrollIndicators()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            module.theme.top.opacity(0.96),
+                            module.theme.bottom.opacity(0.94),
+                            Color.black.opacity(0.78)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+        )
+        .shadow(color: tint.opacity(0.22), radius: 36, y: 20)
+    }
+
+    private func resultMetric(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title.appLocalized.uppercased())
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 10, weight: .bold, design: .rounded))
                 .kerning(1.2)
                 .foregroundStyle(AppPalette.textTertiary)
 
-            Text(value.appLocalized)
-                .font(.system(size: 17, weight: .bold, design: .rounded))
+            Text(value)
+                .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(AppPalette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(caption.appLocalized)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(AppPalette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
+        .padding(18)
         .background(DarkPanelBackground(tint: tint, isElevated: true))
+    }
+}
+
+private struct RunCompletionTaskRow: View {
+    let task: RunTaskReport
+    let tint: Color
+    @State private var showsDetails = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(task.title.appLocalized)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppPalette.textPrimary)
+
+                Text(task.summary.appLocalized)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(summaryTint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+                Spacer(minLength: 10)
+
+                StatusBadge(text: task.state.badgeText, tint: task.state.tint)
+            }
+
+            if let output = task.output, !output.isEmpty {
+                Button(showsDetails ? localized("Hide details", "Details verbergen") : localized("Show details", "Details tonen")) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showsDetails.toggle()
+                    }
+                }
+                .buttonStyle(SecondaryGlassButtonStyle())
+
+                if showsDetails {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        Text(output)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppPalette.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .appScrollIndicators()
+                    .frame(maxHeight: 160)
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(tint.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(tint.opacity(0.16), lineWidth: 1)
+                            )
+                    )
+                }
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                )
+        )
+    }
+
+    private var summaryTint: Color {
+        switch task.state {
+        case .failed:
+            return AppPalette.error.opacity(0.94)
+        default:
+            return AppPalette.textSecondary
+        }
     }
 }
 
@@ -1420,7 +1703,7 @@ private struct ScanStatusPanel: View {
                     .font(.system(size: 17, weight: .bold, design: .rounded))
                     .foregroundStyle(AppPalette.textPrimary)
 
-                Text(localized("The app is looking first so it can show what is safe to review before anything gets removed.", "De app kijkt eerst wat er is, zodat u veilig kunt bekijken wat er opgeschoond kan worden voordat er iets wordt verwijderd."))
+                Text(localized("Looking for safe items to review first.", "Zoekt eerst naar veilige onderdelen om te bekijken."))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AppPalette.textSecondary)
             }
@@ -1444,7 +1727,7 @@ private struct TaskComponentPreview: View {
                 .foregroundStyle(AppPalette.textTertiary)
                 .textCase(.uppercase)
 
-            ForEach(Array(components.prefix(3))) { component in
+            ForEach(Array(components.prefix(2))) { component in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: selectedIDs.contains(component.id) ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 14, weight: .semibold))
@@ -1459,6 +1742,7 @@ private struct TaskComponentPreview: View {
                         Text(component.detail.appLocalized)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(AppPalette.textTertiary)
+                            .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -1489,9 +1773,9 @@ private struct TaskComponentPreview: View {
                 )
             }
 
-            if components.count > 3 {
-                Text(localized("+ \(components.count - 3) more part(s) in Review", "+ \(components.count - 3) extra onderdeel(en) in Controle"))
-                    .font(.system(size: 11, weight: .medium))
+            if components.count > 2 {
+                Text(localized("+ \(components.count - 2) more part(s) in Review", "+ \(components.count - 2) extra onderdeel(en) in Controle"))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AppPalette.textSecondary)
             }
         }
@@ -1506,16 +1790,10 @@ private struct TaskOutputPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(localized("Latest result", "Laatste resultaat"))
+                Text(localized("Result", "Resultaat"))
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(AppPalette.textTertiary)
                     .textCase(.uppercase)
-
-                Spacer()
-
-                Text(localized("Inside the app", "Binnen de app"))
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(tint.opacity(0.94))
             }
 
             ScrollView(.vertical, showsIndicators: true) {
@@ -1525,7 +1803,8 @@ private struct TaskOutputPreview: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-            .frame(maxHeight: 196)
+            .appScrollIndicators()
+            .frame(maxHeight: 168)
             .padding(14)
             .background(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -1590,11 +1869,13 @@ private struct TaskCard: View {
                     Text(task.subtitle.appLocalized)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(AppPalette.textSecondary)
+                        .lineLimit(1)
 
                     Text(task.detail.appLocalized)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(AppPalette.textTertiary)
                         .lineSpacing(2)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
 
                     TaskScanSummary(state: viewModel.scanState(for: task.id))
@@ -1686,9 +1967,9 @@ private struct TaskScanSummary: View {
     var body: some View {
         switch state {
         case .idle:
-            summaryRow(text: localized("This page has not been checked yet.", "Deze pagina is nog niet gecontroleerd."), tint: AppPalette.textTertiary)
+            summaryRow(text: localized("Not checked yet.", "Nog niet gecontroleerd."), tint: AppPalette.textTertiary)
         case .scanning:
-            summaryRow(text: localized("Checking this area now so you can see what is here first.", "Dit gebied wordt nu gecontroleerd zodat u eerst kunt zien wat hier staat."), tint: AppPalette.iceBlue)
+            summaryRow(text: localized("Checking now.", "Nu aan het controleren."), tint: AppPalette.iceBlue)
         case let .ready(finding):
             summaryRow(text: finding.message, tint: AppPalette.success)
         case let .unavailable(message):
@@ -1887,6 +2168,7 @@ private struct DeveloperPreviewWorkspace: View {
                 }
                 .padding(28)
             }
+            .appScrollIndicators()
         }
         .frame(maxWidth: 760, maxHeight: 760, alignment: .top)
         .background(
@@ -2049,8 +2331,8 @@ private struct AboutWorkspace: View {
                     aboutCard(
                         title: localized("Changelog", "Changelog"),
                         body: localized(
-                            "This version keeps more of the experience inside the app itself: review now happens in-page, progress uses a full live workspace, read-only reports stay inside the interface, and the sidebar gained a dedicated About section with clearer actions.",
-                            "Deze versie houdt nog meer van de ervaring binnen de app zelf: controle gebeurt nu in de pagina, voortgang gebruikt een volledige live werkruimte, alleen-lezen rapporten blijven in de interface en de sidebar kreeg een aparte Over-sectie met duidelijkere acties."
+                            "Version 1.0.3 improves the release experience with more reliable update checks for the EasyComp download folder, a calmer progress flow, a persistent results screen, visible scroll bars, lighter interface copy, and subtle completion sounds.",
+                            "Versie 1.0.3 verbetert de release-ervaring met betrouwbaardere updatecontrole voor de EasyComp-downloadmap, een rustigere voortgangsflow, een blijvend resultaatscherm, zichtbare scrollbalken, compactere teksten en subtiele afrondgeluiden."
                         )
                     )
                     aboutCard(
@@ -2063,6 +2345,7 @@ private struct AboutWorkspace: View {
                 }
                 .padding(28)
             }
+            .appScrollIndicators()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
@@ -2141,7 +2424,7 @@ private struct TaskReviewWorkspace: View {
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(AppPalette.textPrimary)
 
-                    Text(localized("This stays inside the main interface. Nothing runs until you press the final button below.", "Dit blijft binnen de hoofdinterface. Er wordt niets uitgevoerd totdat u op de laatste knop hieronder drukt."))
+                    Text(localized("Review your selection before you start.", "Bekijk uw selectie voordat u start."))
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(AppPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2256,6 +2539,7 @@ private struct TaskReviewWorkspace: View {
                 }
                 .padding(28)
             }
+            .appScrollIndicators()
 
             Rectangle()
                 .fill(Color.white.opacity(0.07))
@@ -2408,13 +2692,13 @@ private struct ActivityConsole: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(localized("Activity", "Activiteit"))
+                Text(localized("Recent activity", "Recente activiteit"))
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(AppPalette.textPrimary)
 
                 Spacer()
 
-                Text(localized("Latest first", "Nieuwste eerst"))
+                Text(localized("Recent first", "Nieuwste eerst"))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(AppPalette.textSecondary)
                     .padding(.horizontal, 12)
@@ -2426,7 +2710,7 @@ private struct ActivityConsole: View {
             }
 
             VStack(spacing: 10) {
-                ForEach(viewModel.activityEntries.prefix(6)) { entry in
+                ForEach(viewModel.activityEntries.prefix(4)) { entry in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             Circle()
@@ -2445,8 +2729,9 @@ private struct ActivityConsole: View {
                         }
 
                         Text(entry.detail.appLocalized)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(entry.isError ? AppPalette.error.opacity(0.94) : AppPalette.textSecondary)
+                            .lineLimit(3)
                             .lineSpacing(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -2490,6 +2775,8 @@ private func componentActionText(_ component: TaskScanComponent) -> String {
         return localized("Will remove the local files at \(path).", "Verwijdert de lokale bestanden op \(path).")
     case let .removePaths(paths, _):
         return localized("Will remove \(paths.count) local file groups from this part.", "Verwijdert \(paths.count) lokale bestandsgroepen uit dit onderdeel.")
+    case let .removeDirectoryContents(path, _):
+        return localized("Will remove accessible items inside \(path) and skip protected ones safely.", "Verwijdert toegankelijke onderdelen in \(path) en slaat beschermde onderdelen veilig over.")
     case .shell:
         return localized("Will run the cleanup command only for this selected part.", "Voert het opschooncommando alleen uit voor dit geselecteerde onderdeel.")
     case .sqlite:

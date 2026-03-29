@@ -32,6 +32,7 @@ enum AppTranslations {
         "Recommended first pass": "Aanbevolen eerste stap",
         "Smart Care": "Slimme Zorg",
         "A balanced starter lane that prepares your tooling, refreshes memory and network state, and gives the Mac a safe first tune-up.": "Een evenwichtige start die uw hulpmiddelen voorbereidt, geheugen en netwerk ververst en uw Mac een veilige eerste opfrisbeurt geeft.",
+        "A calm first pass that prepares your tools, checks safe cleanup areas, and gives your Mac a low-friction tune-up before deeper maintenance.": "Een rustige eerste stap die uw hulpmiddelen voorbereidt, veilige opschoongebieden controleert en uw Mac een onderhoudsbeurt met weinig gedoe geeft voordat u dieper onderhoud uitvoert.",
         "Junk and leftovers": "Rommel en restbestanden",
         "Cleanup": "Opschonen",
         "Tidy up system junk, caches, browser leftovers, mail downloads, and old local clutter that quietly eats into storage.": "Ruim systeemrommel, caches, browserresten, Mail-downloads en oude lokale rommel op die ongemerkt opslagruimte innemen.",

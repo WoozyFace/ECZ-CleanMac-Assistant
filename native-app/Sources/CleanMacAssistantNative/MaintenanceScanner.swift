@@ -3,6 +3,7 @@ import Foundation
 enum CleanupAction: Equatable {
     case removePath(String, requiresAdmin: Bool)
     case removePaths([String], requiresAdmin: Bool)
+    case removeDirectoryContents(String, requiresAdmin: Bool)
     case shell(command: String, requiresAdmin: Bool)
     case sqlite(databasePath: String, statement: String)
 }
@@ -200,7 +201,7 @@ actor MaintenanceScanner {
                         directory: home("Library/Messages"),
                         prefix: "chat.db",
                         selectedByDefault: false,
-                        action: .shell(command: "rm -rf ~/Library/Messages/chat.db*", requiresAdmin: false)
+                        requiresAdmin: false
                     )
                 ],
                 emptyMessage: "No local Messages database files were found."
@@ -338,7 +339,12 @@ actor MaintenanceScanner {
     }
 
     private func reviewState(components: [TaskScanComponent], emptyMessage: String) -> TaskScanState {
-        let available = components.filter { ($0.reclaimableBytes ?? 0) > 0 || ($0.itemCount ?? 0) > 0 || $0.cleanupAction == nil }
+        let available = components.filter { component in
+            (component.reclaimableBytes ?? 0) > 0
+                || (component.itemCount ?? 0) > 0
+                || component.cleanupAction == nil
+                || shouldKeepProtectedComponentVisible(component)
+        }
 
         guard !available.isEmpty else {
             return .ready(TaskScanFinding(message: emptyMessage, reclaimableBytes: 0, itemCount: 0, components: []))
@@ -417,7 +423,7 @@ actor MaintenanceScanner {
         )
     }
 
-    private func prefixComponent(id: String, title: String, detail: String, directory: URL, prefix: String, selectedByDefault: Bool, action: CleanupAction?) -> TaskScanComponent {
+    private func prefixComponent(id: String, title: String, detail: String, directory: URL, prefix: String, selectedByDefault: Bool, requiresAdmin: Bool) -> TaskScanComponent {
         let children = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
         let matches = children.filter { $0.lastPathComponent.hasPrefix(prefix) }
         let totalBytes = matches.reduce(Int64(0)) { $0 + fileSize(for: $1) }
@@ -428,7 +434,7 @@ actor MaintenanceScanner {
             reclaimableBytes: totalBytes,
             itemCount: matches.count,
             selectedByDefault: selectedByDefault,
-            cleanupAction: action
+            cleanupAction: matches.isEmpty ? nil : .removePaths(matches.map(\.path), requiresAdmin: requiresAdmin)
         )
     }
 
@@ -445,10 +451,34 @@ actor MaintenanceScanner {
     }
 
     private func deleteContentsAction(for path: URL, requiresAdmin: Bool) -> CleanupAction {
-        .shell(
-            command: "if [ -d \(shellQuote(path.path)) ]; then find \(shellQuote(path.path)) -mindepth 1 -maxdepth 1 -exec rm -rf {} +; fi",
-            requiresAdmin: requiresAdmin
-        )
+        .removeDirectoryContents(path.path, requiresAdmin: requiresAdmin)
+    }
+
+    private func shouldKeepProtectedComponentVisible(_ component: TaskScanComponent) -> Bool {
+        guard let action = component.cleanupAction else { return false }
+
+        switch action {
+        case let .removePath(path, _):
+            return isLikelyProtectedPath(path) && fileManager.fileExists(atPath: path)
+        case let .removePaths(paths, _):
+            return paths.contains { isLikelyProtectedPath($0) && fileManager.fileExists(atPath: $0) }
+        case let .removeDirectoryContents(path, _):
+            return isLikelyProtectedPath(path) && fileManager.fileExists(atPath: path)
+        case let .sqlite(databasePath, _):
+            return isLikelyProtectedPath(databasePath) && fileManager.fileExists(atPath: databasePath)
+        case .shell:
+            return false
+        }
+    }
+
+    private func isLikelyProtectedPath(_ path: String) -> Bool {
+        let lowered = path.lowercased()
+        return lowered.contains("/.trash")
+            || lowered.contains("/library/caches")
+            || lowered.contains("/library/safari/")
+            || lowered.contains("/library/messages")
+            || lowered.contains("com.apple.mail")
+            || lowered.contains("/library/cookies")
     }
 
     private func home(_ relativePath: String) -> URL {
