@@ -2,6 +2,10 @@
 
 CleanMac Assistant is EasyComp Zeeland's free Mac maintenance project. This repository contains both the original AppleScript edition and the newer native macOS SwiftUI app source.
 
+# Compatibility 
+
+The app is currently only supported and tested on the latest macOS version, Tahoe 26.3.1 (a) (25D771280a).  This version is compatible with both Intel (x86) and M-series (ARM) platforms. While it may work on older versions, we haven’t tested that ourselves. 
+
 ## Repository Layout
 
 - `native-app/`
